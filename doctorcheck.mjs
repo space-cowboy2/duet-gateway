@@ -6,7 +6,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { diagnose, format, ownerArgs, realProbe, runDoctor } from "./doctor.mjs";
+import { diagnose, format, realProbe, runDoctor } from "./doctor.mjs";
 
 const B = path.resolve("/fake"), P = (...a) => path.join(B, ...a);
 const HASH = "scrypt$" + "ab".repeat(16) + "$" + "cd".repeat(32), TOKEN = "secret-runner-token-123";
@@ -181,7 +181,10 @@ const run = async (probe, opts = {}) => {
   if (process.platform === "win32" && !got?.length) {
     // Show why PowerShell's owner check failed.
     const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const r = spawnSync(ps, ownerArgs(), { encoding: "utf8", env: { ...process.env, DOCTOR_PATHS: git } });
+    const dbg = `[IO.Directory]::GetAccessControl($env:DOCTOR_PATHS).GetOwner([Security.Principal.SecurityIdentifier]).Value
+[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; [bool]((whoami /groups) -match 'S-1-5-32-544')`;
+    const r = spawnSync(ps, ["-NoProfile", "-EncodedCommand", Buffer.from(dbg, "utf16le").toString("base64")],
+      { encoding: "utf8", env: { ...process.env, DOCTOR_PATHS: git } });
     console.error("owner check:", r.status, JSON.stringify(r.stdout), JSON.stringify(r.stderr), r.error?.message);
   }
   assert.deepEqual(got, [git], "a .git this process created should count as the current user's");

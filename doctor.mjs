@@ -30,11 +30,14 @@ $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $admin = [bool]((whoami /groups) -match 'S-1-5-32-544')
 $ps = $env:DOCTOR_PATHS -split "\`n"
 for ($i = 0; $i -lt $ps.Length; $i++) {
-  $o = (Get-Acl -LiteralPath $ps[$i]).GetOwner([Security.Principal.SecurityIdentifier]).Value
+  $acl = if ([IO.Directory]::Exists($ps[$i])) { [IO.Directory]::GetAccessControl($ps[$i]) } else { [IO.File]::GetAccessControl($ps[$i]) }
+  $o = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
   if ($o -eq $me -or ($admin -and $o -eq 'S-1-5-32-544')) { $i }
 }
 exit 0`;
 // -EncodedCommand (UTF-16LE base64) so no quote or newline in the script depends on command-line escaping.
+// The script uses .NET rather than Get-Acl: run from PowerShell 7, Windows PowerShell inherits a PSModulePath whose
+// Microsoft.PowerShell.Security it cannot load. PSModulePath is dropped from its environment for the same reason.
 export const ownerArgs = () => ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(OWNER_PS, "utf16le").toString("base64")];
 
 export function realProbe() {
@@ -68,7 +71,8 @@ export function realProbe() {
         const uid = process.getuid?.();
         return paths.filter(p => { try { return fs.statSync(p).uid === uid; } catch { return false; } });
       }
-      const out = await run(POWERSHELL, ownerArgs(), { env: { ...process.env, DOCTOR_PATHS: paths.join("\n") } });
+      const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== "psmodulepath"));
+      const out = await run(POWERSHELL, ownerArgs(), { env: { ...env, DOCTOR_PATHS: paths.join("\n") } });
       return out === null ? null : out.split(/\r?\n/).filter(s => s.trim()).map(s => paths[Number(s)]).filter(Boolean);
     },
     // Status column of `schtasks /query`, e.g. "Running" or "Ready"; null if the task is missing or not visible.

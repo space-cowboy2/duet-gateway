@@ -46,7 +46,9 @@ export function makeSessions(cfg, log) {
   const egnyteRoot = cc.egnyteRoot || "Z:\\";
   // Egnyte tools are opt-in on the PC, so they only exist once Danny has set them to "Needs approval" in claude.ai.
   const egnyteOn = cc.egnyteEnabled === true;
-  let runnerSeen = 0;
+  // runnerLostAfterSecs is a test hook; leave it unset.
+  const lostAfter = cc.runnerLostAfterSecs ?? LOST_AFTER;
+  let runnerSeen = 0, runnerInstance = null, runnerConflicts = 0;
 
   let db;
   try { db = JSON.parse(fs.readFileSync(file, "utf8")); } catch { db = {}; }
@@ -128,10 +130,40 @@ export function makeSessions(cfg, log) {
   pumpLocal();
 
   // ---- runner protocol (loopback port, its own token) ----
-  function runnerNext({ running = [], free = 0 } = {}) {
+  // A normal session runs as duet-agent and can read runner-token, so it could poll too, take queued prompts or
+  // post forged answers. Each runner process sends a random instance id; the first one is pinned and any other is
+  // refused while the pinned one was seen within lostAfter. Afterwards the next one takes over (a real restart).
+  // This detects and blocks a second poller; it can't stop a session that kills the runner first (same user).
+  // The pin survives a gateway restart, and the pinned instance gets lostAfter to come back, so a poller left
+  // running by a session can't win the race to be pinned first.
+  runnerInstance = db.runnerInstance ?? null;
+  const restartedAt = now();
+  const refusalLogged = new Map(); // log line -> second it was last written
+  function refuse(why) {
+    runnerConflicts++;
+    // At most one line a second per reason, so a polling loop can't flood gateway.log; the count has every refusal.
+    if (refusalLogged.get(why) !== now()) { refusalLogged.set(why, now()); log(why); }
+    return false;
+  }
+  function pin(instance) {
+    if (typeof instance !== "string" || !/^[\w-]{8,64}$/.test(instance))
+      return refuse("runner: request without an instance id refused (an old runner.mjs? re-run setup-agent.ps1)");
+    if (instance !== runnerInstance) {
+      if (runnerInstance && Math.max(runnerSeen, restartedAt) >= now() - lostAfter) return refuse("runner: second instance refused");
+      log("runner: new instance");
+      runnerInstance = db.runnerInstance = instance;
+      save();
+    }
     runnerSeen = now();
+    return true;
+  }
+
+  function runnerNext({ running = [], free = 0 } = {}, instance) {
+    if (!Array.isArray(running)) running = [];
     for (const s of Object.values(db.sessions)) {
-      if (s.kind === "agent" && s.status === "running" && !running.includes(s.turnId) && s.dispatched < now() - LOST_AFTER)
+      // A turn handed to an earlier instance can't be reported any more (its answer would be refused).
+      if (s.kind === "agent" && s.status === "running" && s.dispatched < now() - lostAfter
+          && (s.runner?.instance !== instance || !running.includes(s.turnId)))
         finish(s, s.turnId, { ok: false, text: "The runner lost this turn (it probably restarted). Send the message again." });
     }
     if (free < 1 || off()) return {};
@@ -139,11 +171,19 @@ export function makeSessions(cfg, log) {
     if (!s) return {};
     s.status = "running";
     s.dispatched = now();
+    s.runner = { instance, turnId: s.turnId };
     save();
     return { turn: { turnId: s.turnId, sessionId: s.id, claudeId: s.claudeId, prompt: s.prompt, cwd: workspaces[s.workspace], timeoutSecs } };
   }
-  function runnerDone({ sessionId, turnId, ok, text, started }) {
-    return finish(db.sessions[sessionId], turnId, { ok: !!ok, text: String(text ?? ""), started });
+  // Returns null when the answer is refused: only the instance the turn was handed to may report it.
+  function runnerDone({ sessionId, turnId, ok, text, started }, instance) {
+    const s = db.sessions[sessionId];
+    if (!s || s.kind !== "agent" || s.turnId !== turnId) return false;
+    if (s.runner?.turnId !== turnId || s.runner.instance !== instance) {
+      refuse(`runner: answer for session ${s.id} from another instance refused`);
+      return null;
+    }
+    return finish(s, turnId, { ok: !!ok, text: String(text ?? ""), started });
   }
 
   function runnerApp() {
@@ -155,9 +195,14 @@ export function makeSessions(cfg, log) {
       if (!cc.runnerToken || !timingSafeEqual(got, want)) return res.status(401).end();
       next();
     });
+    const CONFLICT = { error: "another runner instance is active on this gateway" };
+    app.use((req, res, next) => pin(req.get("x-runner-instance")) ? next() : res.status(409).json(CONFLICT));
     app.use(express.json({ limit: "4mb" }));
-    app.post("/runner/next", (req, res) => res.json(runnerNext(req.body)));
-    app.post("/runner/done", (req, res) => res.json({ ok: runnerDone(req.body || {}) }));
+    app.post("/runner/next", (req, res) => res.json(runnerNext(req.body, req.get("x-runner-instance"))));
+    app.post("/runner/done", (req, res) => {
+      const ok = runnerDone(req.body || {}, req.get("x-runner-instance"));
+      ok === null ? res.status(409).json(CONFLICT) : res.json({ ok });
+    });
     return app;
   }
 
@@ -256,6 +301,7 @@ export function makeSessions(cfg, log) {
       run: () => ({
         sessions: Object.values(db.sessions).sort((a, b) => b.updated - a.updated).slice(0, 30).map(view),
         runner_last_seen_seconds_ago: runnerSeen ? now() - runnerSeen : null,
+        runner_conflicts: runnerConflicts,
         switched_off: off(),
         workspaces,
       }),

@@ -2,6 +2,7 @@
 // setup-agent.ps1 copies this file and claude.mjs to C:\ProgramData\duet-agent\bin and starts it at boot.
 // It asks the gateway for work on a loopback-only port, so it never takes calls from the internet.
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,8 @@ export function startRunner(cfg) {
   const inWorkspace = p => typeof p === "string" && roots.some(r => norm(p) === r || norm(p).startsWith(r + path.sep));
   const flags = ["--permission-mode", cfg.permissionMode || "auto", "--strict-mcp-config"];
   const running = new Map();
+  // The gateway serves one runner instance at a time and refuses others (HTTP 409); see sessions.mjs.
+  const instance = randomBytes(16).toString("hex");
   let stopped = false;
 
   // Danny owns the repos, so git would refuse them as "dubious ownership" for this user.
@@ -34,9 +37,9 @@ export function startRunner(cfg) {
   async function post(route, body) {
     const res = await fetch(cfg.gateway + route, {
       method: "POST", body: JSON.stringify(body),
-      headers: { "content-type": "application/json", authorization: `Bearer ${read(cfg.tokenFile)}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${read(cfg.tokenFile)}`, "x-runner-instance": instance },
     });
-    if (!res.ok) throw new Error(`${route}: HTTP ${res.status}`);
+    if (!res.ok) throw Object.assign(new Error(`${route}: HTTP ${res.status}`), { status: res.status });
     return res.json();
   }
 
@@ -49,15 +52,20 @@ export function startRunner(cfg) {
       result = await runTurn({ claude: cfg.claude, claudeId: turn.claudeId, prompt: turn.prompt, cwd: turn.cwd, flags,
         timeoutSecs: turn.timeoutSecs || 3600, env, configDir: cfg.claudeConfigDir });
     }
+    let reported = false;
     for (let i = 0; i < 5; i++) {
-      try { await post("/runner/done", { sessionId: turn.sessionId, turnId: turn.turnId, ...result }); break; }
-      catch (e) { log(`report failed: ${e.message}`); await sleep(3000 * (i + 1)); }
+      try { await post("/runner/done", { sessionId: turn.sessionId, turnId: turn.turnId, ...result }); reported = true; break; }
+      catch (e) {
+        log(`report failed: ${e.message}`);
+        if (e.status === 409) break; // the gateway handed this turn to another instance, or serves another one now
+        await sleep(3000 * (i + 1));
+      }
     }
-    log(`turn ${turn.sessionId} ${result.ok ? "done" : "failed"}`);
+    log(`turn ${turn.sessionId} ${result.ok ? "done" : "failed"}${reported ? "" : " (answer not delivered)"}`);
   }
 
   const done = (async () => {
-    log(`runner started (up to ${cfg.maxParallel || 2} at a time)`);
+    log(`runner ${instance.slice(0, 8)} started (up to ${cfg.maxParallel || 2} at a time)`);
     while (!stopped) {
       try {
         const free = (cfg.maxParallel || 2) - running.size;
@@ -68,7 +76,7 @@ export function startRunner(cfg) {
           continue;
         }
       } catch (e) {
-        log(`gateway unreachable: ${e.message}`);
+        log(e.status === 409 ? "gateway refused this runner: another runner instance is active (retrying)" : `gateway unreachable: ${e.message}`);
         await sleep(cfg.retryMs ?? 15000);
         continue;
       }

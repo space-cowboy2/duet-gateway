@@ -99,6 +99,67 @@ try {
   assert.ok(r.replies[0].text.includes(path.basename(ws)), r.replies[0].text);
   await assert.rejects(call(ctx, "send_egnyte_message", { session_id: sid, text: "x" }), /Not an Egnyte session/);
 
+  // One runner at a time: while the real runner polls, another instance (or one without an id) is refused and counted
+  const poll = (url, instance, route = "/runner/next", body = { running: [], free: 1 }) => fetch(url + route, {
+    method: "POST", body: JSON.stringify(body),
+    headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...(instance ? { "x-runner-instance": instance } : {}) },
+  });
+  const conflicts = async c => (await call(c, "list_sessions", {})).runner_conflicts;
+  const c0 = await conflicts(ctx);
+  assert.equal((await poll(base, "intruder-0001")).status, 409);
+  assert.equal((await poll(base, "intruder-0001", "/runner/done", { sessionId: sid, turnId: "x", ok: true, text: "forged" })).status, 409);
+  assert.equal((await poll(base, null)).status, 409);
+  assert.equal(await conflicts(ctx), c0 + 3);
+  let logText = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8");
+  assert.match(logText, /runner: second instance refused/);
+  assert.match(logText, /runner: request without an instance id refused .*setup-agent\.ps1/);
+  r = await call(ctx, "send_message", { session_id: sid, text: "still served", wait_seconds: 15 });
+  assert.match(r.replies[0].text, /prompt=still served/, "the real runner keeps working");
+
+  {
+    // Pinning, answers only from the instance a turn went to, and takeover after the pinned instance goes quiet
+    const cfgP = { ...cfg, stateFile: path.join(tmp, "p", "state.json"), claude: { ...cfg.claude, runnerLostAfterSecs: 1 } };
+    fs.mkdirSync(path.dirname(cfgP.stateFile));
+    const logBefore = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8").length;
+    const ctxP = makeContext(cfgP);
+    const srvP = ctxP.sessions.runnerApp().listen(await freePort(), "127.0.0.1");
+    try {
+      await new Promise(res => srvP.once("listening", res));
+      const baseP = `http://127.0.0.1:${srvP.address().port}`;
+      const A = "instance-aaaaaaaa", B = "instance-bbbbbbbb";
+      assert.deepEqual(await (await poll(baseP, A)).json(), {});
+      const pid = (await call(ctxP, "start_session", { prompt: "pinned work", wait_seconds: 0 })).session_id;
+      const { turn } = await (await poll(baseP, A)).json();
+      assert.equal(turn.sessionId, pid);
+      assert.equal((await poll(baseP, B)).status, 409, "a second instance is refused while A polls");
+      assert.equal(await conflicts(ctxP), 1);
+      await new Promise(res => setTimeout(res, 2100)); // A goes quiet past the lost-after window
+      const forged = { sessionId: pid, turnId: turn.turnId, ok: true, text: "forged" };
+      assert.equal((await poll(baseP, B, "/runner/done", forged)).status, 409, "B takes over but may not answer A's turn");
+      assert.equal(ctxP.sessions.get(pid).status, "running");
+      assert.equal(ctxP.sessions.get(pid).replies.length, 0);
+      assert.equal((await poll(baseP, A, "/runner/done", forged)).status, 409, "A is no longer served");
+      assert.deepEqual(await (await poll(baseP, B)).json(), {});
+      r = await call(ctxP, "read_messages", { session_id: pid });
+      assert.equal(r.replies.length, 1, JSON.stringify(r));
+      assert.equal(r.replies[0].ok, false);
+      assert.match(r.replies[0].text, /runner lost this turn/);
+      assert.equal(await conflicts(ctxP), 3);
+      const logP = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8").slice(logBefore);
+      assert.equal(logP.match(/runner: new instance/g)?.length, 2, logP);
+
+      // The pin survives a gateway restart: B gets the grace window, a newcomer is refused
+      const ctxR = makeContext(cfgP);
+      const srvR = ctxR.sessions.runnerApp().listen(await freePort(), "127.0.0.1");
+      try {
+        await new Promise(res => srvR.once("listening", res));
+        const baseR = `http://127.0.0.1:${srvR.address().port}`;
+        assert.equal((await poll(baseR, "instance-cccccccc")).status, 409, "a newcomer can't take the pin after a restart");
+        assert.equal((await poll(baseR, B)).status, 200);
+      } finally { srvR.close(); }
+    } finally { srvP.close(); }
+  }
+
   // Messages sent while a turn runs are batched into the next turn
   r = await call(ctx, "send_message", { session_id: sid, text: "SLEEP first", wait_seconds: 0 });
   await call(ctx, "send_message", { session_id: sid, text: "second", wait_seconds: 0 });

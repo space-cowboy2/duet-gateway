@@ -23,6 +23,7 @@ jobs:
         shell: powershell
         run: |
           $t = $env:FAKE
+          wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true   # for the failure dump below
           New-Item -ItemType Directory -Force "$t\Workspace\mine\.git", "$t\Protect\repo", "$env:USERPROFILE\.ssh" | Out-Null
           Set-Content "$env:USERPROFILE\.ssh\probe" "not a key"
           Copy-Item config.example.json config.json
@@ -74,6 +75,16 @@ jobs:
           if (Get-ChildItem -Force "$t\Protect\leaky") { throw "the probe left a file in the leaky folder" }
           $task = Get-ScheduledTask duet-agent-runner
           if ($task.State -ne "Disabled") { throw "runner task is $($task.State), not Disabled" }
+
+      - name: On failure, show Task Scheduler and logon-failure events
+        if: failure()
+        shell: powershell
+        run: |
+          Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational -MaxEvents 15 -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "$($_.TimeCreated) $($_.Id) $(($_.Message -split "`n")[0])" }
+          Get-WinEvent -FilterHashtable @{ LogName = "Security"; Id = 4625 } -MaxEvents 3 -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host ($_.Message -split "`n" | Select-String "Failure Reason|Logon Type|Account Name" | Out-String) }
+          Get-Content C:\ProgramData\duet-agent\logs\runner.log -Tail 5 -ErrorAction SilentlyContinue
 
       - name: Uninstall
         shell: powershell

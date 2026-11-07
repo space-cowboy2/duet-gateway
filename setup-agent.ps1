@@ -51,6 +51,24 @@ function New-Secret([int]$bytes) {
   ([Convert]::ToBase64String($b) -replace '[+/=]', '')
 }
 function Step($m) { Write-Host "-> $m" -ForegroundColor Cyan }
+# "Log on as a batch job" lets Task Scheduler start the runner and the probe as duet-agent with its stored password.
+# Standard users lack it by default, so add (or, on -Uninstall, remove) the user's SID in local security policy.
+function Set-BatchLogon([string]$sid, [bool]$grant) {
+  $dir = Join-Path $env:TEMP "duet-agent-secedit"
+  New-Item -ItemType Directory -Force $dir | Out-Null
+  try {
+    secedit /export /cfg "$dir\now.inf" /areas USER_RIGHTS /quiet | Out-Null
+    $line = Get-Content "$dir\now.inf" | Where-Object { $_ -match "^SeBatchLogonRight\s*=" }
+    $list = @(if ($line) { ($line -split "=", 2)[1].Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ } })
+    $has = $list -contains "*$sid"
+    if ($grant -eq $has) { return }
+    $list = if ($grant) { $list + "*$sid" } else { @($list | Where-Object { $_ -ne "*$sid" }) }
+    $inf = "[Unicode]`r`nUnicode=yes`r`n[Version]`r`nsignature=`"`$CHICAGO`$`"`r`nRevision=1`r`n[Privilege Rights]`r`nSeBatchLogonRight = $($list -join ',')`r`n"
+    [IO.File]::WriteAllText("$dir\new.inf", $inf, [Text.Encoding]::Unicode)
+    secedit /configure /db "$dir\new.sdb" /cfg "$dir\new.inf" /areas USER_RIGHTS /quiet | Out-Null
+    if ($LASTEXITCODE) { throw "secedit could not update 'Log on as a batch job' (exit $LASTEXITCODE)." }
+  } finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
 function Get-AgentProcess { Get-Process -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like "*\$UserName" } }
 function Stop-Agent {
   Stop-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
@@ -66,6 +84,8 @@ if ($Uninstall) {
   try { Stop-Agent } catch { Write-Warning "$_" }
   Unregister-ScheduledTask -TaskName $ProbeTask -Confirm:$false -ErrorAction SilentlyContinue
   foreach ($w in $Workspaces + $Protect) { if (Test-Path $w) { icacls $w /remove $UserName /T /C /Q | Out-Null } }
+  $u = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
+  if ($u) { try { Set-BatchLogon $u.SID.Value $false } catch { Write-Warning "$_" } }
   Remove-LocalUser -Name $UserName -ErrorAction SilentlyContinue
   Remove-Item $Base -Recurse -Force -ErrorAction SilentlyContinue
   Write-Host "Done. C:\Users\$UserName (its profile) is left in place; delete it in System > About > Advanced > User Profiles if you want."
@@ -99,6 +119,7 @@ if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
 }
 Add-LocalGroupMember -SID "S-1-5-32-545" -Member $UserName -ErrorAction SilentlyContinue
 Remove-LocalGroupMember -SID "S-1-5-32-544" -Member $UserName -ErrorAction SilentlyContinue
+Set-BatchLogon (Get-LocalUser -Name $UserName).SID.Value $true
 $hide = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList"
 New-Item $hide -Force | Out-Null
 Set-ItemProperty $hide -Name $UserName -Value 0 -Type DWord
@@ -249,12 +270,15 @@ Register-ScheduledTask -TaskName $ProbeTask -Action $probeAction -User "$env:COM
 try {
   Start-ScheduledTask -TaskName $ProbeTask
   # The first run also creates duet-agent's profile, which can take a while. 267009 running, 267011 not run yet, 267045 queued.
-  $until = (Get-Date).AddMinutes(3)
+  $t0 = Get-Date
   do {
     Start-Sleep -Milliseconds 500
     $probeInfo = Get-ScheduledTaskInfo -TaskName $ProbeTask
     $state = (Get-ScheduledTask -TaskName $ProbeTask).State
-  } while (($state -eq "Running" -or $state -eq "Queued" -or $probeInfo.LastTaskResult -in 267009, 267011, 267045) -and (Get-Date) -lt $until)
+    $waited = ((Get-Date) - $t0).TotalSeconds
+    # Still "not run yet" and not running after 30 s: it never started (usually a logon failure).
+    $neverRan = $state -eq "Ready" -and $probeInfo.LastTaskResult -eq 267011 -and $waited -gt 30
+  } while (($state -eq "Running" -or $state -eq "Queued" -or $probeInfo.LastTaskResult -in 267009, 267011, 267045) -and -not $neverRan -and $waited -lt 180)
 } finally {
   Stop-ScheduledTask -TaskName $ProbeTask -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $ProbeTask -Confirm:$false -ErrorAction SilentlyContinue
@@ -263,7 +287,9 @@ try {
 }
 $r = $null
 try { $r = [IO.File]::ReadAllText($probeOut) | ConvertFrom-Json } catch {}
-if (-not $r) { throw ("The sandbox probe did not report (task result 0x{0:X8}). The runner was not started." -f $probeInfo.LastTaskResult) }
+if (-not $r) {
+  throw ("The sandbox probe did not report (task state {0}, result 0x{1:X8}; 0x00041303 means Task Scheduler never started it as {2}). The runner was not started." -f $state, $probeInfo.LastTaskResult, $UserName)
+}
 if ($r.error) { throw "The sandbox probe failed to run: $($r.error)" }
 if ("$($r.user)" -notlike "*\$UserName") { throw "The sandbox probe ran as '$($r.user)', not $UserName." }
 $checks = @($r.checks)

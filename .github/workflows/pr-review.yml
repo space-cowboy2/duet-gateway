@@ -27,6 +27,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # files_search shells out to ripgrep, which windows-latest doesn't ship.
+      - run: choco install ripgrep -y --no-progress
       # The runner's default TEMP is an 8.3 short path (C:\Users\RUNNER~1\...). The path guard resolves roots
       # to their long form, so the self-tests' temp roots must start from a long path too.
       # (The runner context is only allowed in step-level env.)
@@ -64,7 +66,11 @@ jobs:
 
             You are the merge gate for this repository. Review this pull request against REVIEW.md.
 
-            1. Read REVIEW.md in full. It is the standard; don't invent rules that aren't in it.
+            1. Read the standard from the base branch, not the PR:
+               `git show origin/${{ github.event.pull_request.base.ref }}:REVIEW.md`
+               (only if that file doesn't exist there, read the PR's REVIEW.md). Read it in full.
+               It is the standard; don't invent rules that aren't in it. If the PR changes
+               REVIEW.md, judge the PR by the base-branch version and mention the change in the summary.
             2. Read the PR with `gh pr view` and `gh pr diff`. Read the surrounding code in the
                changed files, and any callers, so you judge the change in context.
             3. For each problem tied to specific lines, post one inline comment with

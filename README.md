@@ -28,6 +28,7 @@ Duet ──OAuth──▶ Tailscale Funnel ──▶ gateway.mjs (you, desktop l
 - `gateway.log` and `runner.log` hold ids and outcomes only, never prompts or answers. Sessions and answers are kept in `sessions.json`.
 
 ## Setup on a new machine
+`files_search` needs ripgrep (`rg`) on PATH: `winget install BurntSushi.ripgrep.MSVC`.
 ```bash
 npm install
 cp config.example.json config.json   # edit roots, deny, upstream paths and publicUrl for this machine
@@ -69,7 +70,9 @@ One-time setup on GitHub:
 1. Settings → Secrets and variables → Actions → add `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token`; uses your Claude plan) or `ANTHROPIC_API_KEY`.
 2. Settings → Rules → Rulesets (or Branches) → protect `main`: require a pull request, and require the status checks **Tests** and **Claude review**.
 
-To change the bar, edit `REVIEW.md`.
+The review action refuses to run when a PR changes `pr-review.yml` itself (the file must match `main`), so such a PR's Claude review fails and needs an admin merge. Turn on step 2 after this workflow is on `main`.
+
+To change the bar, edit `REVIEW.md`. The reviewer always judges a PR by the `REVIEW.md` on `main`, so a PR can't lower the bar for itself.
 
 ## Not in git (per machine)
 `config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `duet.OFF`.

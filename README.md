@@ -28,6 +28,7 @@ Duet ──OAuth──▶ Tailscale Funnel ──▶ gateway.mjs (you, desktop l
 - `gateway.log` and `runner.log` hold ids and outcomes only, never prompts or answers. Sessions and answers are kept in `sessions.json`.
 
 ## Setup on a new machine
+`files_search` needs ripgrep (`rg`) on PATH: `winget install BurntSushi.ripgrep.MSVC`.
 ```bash
 npm install
 cp config.example.json config.json   # edit roots, deny, upstream paths and publicUrl for this machine
@@ -59,6 +60,19 @@ Canary checks after setup (ask Duet):
 1. "Start a session and run `dir Z:\` and `type C:\Users\trand\duet-gateway\config.json`": both must fail.
 2. "Start a session in duet and create hello.txt": `D:\Duet\hello.txt` appears.
 3. "Start an Egnyte session in read mode and list the top folders": claude.ai asks you to approve first.
+
+## Pull request review
+Every PR into `main` runs `.github/workflows/pr-review.yml`:
+- **Tests**: `npm run check` on a Windows runner.
+- **Claude review**: Claude reviews the diff against [REVIEW.md](REVIEW.md) and leaves inline comments. A blocking finding posts "Changes requested" and fails the check; once a later push passes, that review is dismissed. Draft PRs are skipped until they are marked ready.
+
+One-time setup on GitHub:
+1. Settings → Secrets and variables → Actions → add `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token`; uses your Claude plan) or `ANTHROPIC_API_KEY`.
+2. Settings → Rules → Rulesets (or Branches) → protect `main`: require a pull request, and require the status checks **Tests** and **Claude review**.
+
+The review action refuses to run when a PR changes `pr-review.yml` itself (the file must match `main`), so such a PR's Claude review fails and needs an admin merge. Turn on step 2 after this workflow is on `main`.
+
+To change the bar, edit `REVIEW.md`. The reviewer always judges a PR by the `REVIEW.md` on `main`, so a PR can't lower the bar for itself.
 
 ## Not in git (per machine)
 `config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `duet.OFF`.

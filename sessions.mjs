@@ -13,17 +13,27 @@ const MAX_WAIT = 45, LOST_AFTER = 30, KEEP_ENDED_DAYS = 7, MAX_REPLIES = 50;
 const now = () => Math.floor(Date.now() / 1000);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Egnyte sessions: keep work data on the PC and keep Danny's secrets out.
-const SECRET_RULES = ["~/.ssh/**", "~/.claude/.credentials*", "~/.claude.json", "~/plaid-bridge/**", "~/duet-gateway/**",
-  "~/.config/**", "~/AppData/**", "**/.env*"].flatMap(p => [`Read(${p})`, `Edit(${p})`, `Write(${p})`]);
+// Egnyte sessions run as Danny, so they get no shell (a shell would get past every file rule below) and
+// file access only inside the Egnyte root. dontAsk denies anything not allowed here.
 const NO_OUTSIDE = ["WebFetch", "WebSearch", "SendMessage", "PushNotification", "RemoteTrigger", "CronCreate", "ScheduleWakeup"];
-const READ_ONLY_DENIED = ["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "Agent", "Task", "Workflow", "Skill", ...NO_OUTSIDE];
+const NO_SHELL = ["Bash", "PowerShell", "Agent", "Task", "Workflow", "Skill", ...NO_OUTSIDE];
 
-export function egnyteFlags(mode) {
-  return mode === "edit"
-    ? ["--permission-mode", "auto", "--strict-mcp-config", "--disallowedTools", ...NO_OUTSIDE, ...SECRET_RULES]
-    : ["--permission-mode", "dontAsk", "--strict-mcp-config", "--allowedTools", "Read", "Glob", "Grep",
-      "--disallowedTools", ...READ_ONLY_DENIED, ...SECRET_RULES];
+// Claude Code matches Windows paths in POSIX form: Z:\Shared -> //z/Shared/**
+export function pathRule(root) {
+  const m = /^([A-Za-z]):[\\/]?(.*)$/.exec(root);
+  const p = (m ? `/${m[1].toLowerCase()}/${m[2]}` : root).replace(/\\/g, "/").replace(/\/+$/, "");
+  return `/${p}/**`;
+}
+
+export function egnyteFlags(mode, root = "Z:\\") {
+  const inside = pathRule(root);
+  const drive = /^([A-Za-z]):/.exec(root)?.[1].toLowerCase();
+  // Deny rules beat allow rules from any settings file, including Danny's own ~/.claude/settings.json.
+  const outside = ["~/**", "**/.env*", ...(drive ? [..."abcdefghijklmnopqrstuvwxyz"].filter(d => d !== drive).map(d => `//${d}/**`) : [])];
+  const fileDeny = outside.flatMap(p => [`Read(${p})`, `Edit(${p})`]);
+  const allow = mode === "edit" ? [`Read(${inside})`, `Edit(${inside})`, "Glob", "Grep"] : [`Read(${inside})`, "Glob", "Grep"];
+  const deny = mode === "edit" ? NO_SHELL : [...NO_SHELL, "Edit", "Write", "NotebookEdit"];
+  return ["--permission-mode", "dontAsk", "--strict-mcp-config", "--allowedTools", ...allow, "--disallowedTools", ...deny, ...fileDeny];
 }
 
 export function makeSessions(cfg, log) {
@@ -33,7 +43,12 @@ export function makeSessions(cfg, log) {
   const workspaces = cc.workspaces || {};
   const timeoutSecs = cc.turnTimeoutSecs || 3600;
   const maxLocal = cc.maxParallel || 2;
-  let runnerSeen = 0;
+  const egnyteRoot = cc.egnyteRoot || "Z:\\";
+  // Egnyte tools are opt-in on the PC, so they only exist once Danny has set them to "Needs approval" in claude.ai.
+  const egnyteOn = cc.egnyteEnabled === true;
+  // runnerLostAfterSecs is a test hook; leave it unset.
+  const lostAfter = cc.runnerLostAfterSecs ?? LOST_AFTER;
+  let runnerSeen = 0, runnerInstance = null, runnerConflicts = 0;
 
   let db;
   try { db = JSON.parse(fs.readFileSync(file, "utf8")); } catch { db = {}; }
@@ -92,15 +107,19 @@ export function makeSessions(cfg, log) {
     while (localRunning.size < maxLocal && localQueue.length) {
       const s = db.sessions[localQueue.shift()];
       if (!s || s.status !== "queued-local") continue;
-      if (!fs.existsSync(cc.egnyteRoot || "Z:\\")) {
-        finish(s, s.turnId, { ok: false, text: `The Egnyte drive (${cc.egnyteRoot || "Z:\\"}) is not mounted. Danny needs to be signed in to the PC desktop with Egnyte running.` });
+      if (!egnyteOn) {
+        finish(s, s.turnId, { ok: false, text: "Egnyte sessions are switched off on the PC (egnyteEnabled in config.json)." });
+        continue;
+      }
+      if (!fs.existsSync(egnyteRoot)) {
+        finish(s, s.turnId, { ok: false, text: `The Egnyte drive (${egnyteRoot}) is not mounted. Danny needs to be signed in to the PC desktop with Egnyte running.` });
         continue;
       }
       const turnId = s.turnId;
       s.status = "running";
       save();
       localRunning.set(s.id, null);
-      runTurn({ claude: cc, claudeId: s.claudeId, prompt: s.prompt, cwd: cc.egnyteRoot || "Z:\\", flags: egnyteFlags(s.mode), timeoutSecs,
+      runTurn({ claude: cc, claudeId: s.claudeId, prompt: s.prompt, cwd: egnyteRoot, flags: egnyteFlags(s.mode, egnyteRoot), timeoutSecs,
         onSpawn: child => localRunning.set(s.id, child) })
         .then(r => finish(db.sessions[s.id], turnId, r))
         .finally(() => { localRunning.delete(s.id); pumpLocal(); });
@@ -111,10 +130,40 @@ export function makeSessions(cfg, log) {
   pumpLocal();
 
   // ---- runner protocol (loopback port, its own token) ----
-  function runnerNext({ running = [], free = 0 } = {}) {
+  // A normal session runs as duet-agent and can read runner-token, so it could poll too, take queued prompts or
+  // post forged answers. Each runner process sends a random instance id; the first one is pinned and any other is
+  // refused while the pinned one was seen within lostAfter. Afterwards the next one takes over (a real restart).
+  // This detects and blocks a second poller; it can't stop a session that kills the runner first (same user).
+  // The pin survives a gateway restart, and the pinned instance gets lostAfter to come back, so a poller left
+  // running by a session can't win the race to be pinned first.
+  runnerInstance = db.runnerInstance ?? null;
+  const restartedAt = now();
+  const refusalLogged = new Map(); // log line -> second it was last written
+  function refuse(why) {
+    runnerConflicts++;
+    // At most one line a second per reason, so a polling loop can't flood gateway.log; the count has every refusal.
+    if (refusalLogged.get(why) !== now()) { refusalLogged.set(why, now()); log(why); }
+    return false;
+  }
+  function pin(instance) {
+    if (typeof instance !== "string" || !/^[\w-]{8,64}$/.test(instance))
+      return refuse("runner: request without an instance id refused (an old runner.mjs? re-run setup-agent.ps1)");
+    if (instance !== runnerInstance) {
+      if (runnerInstance && Math.max(runnerSeen, restartedAt) >= now() - lostAfter) return refuse("runner: second instance refused");
+      log("runner: new instance");
+      runnerInstance = db.runnerInstance = instance;
+      save();
+    }
     runnerSeen = now();
+    return true;
+  }
+
+  function runnerNext({ running = [], free = 0 } = {}, instance) {
+    if (!Array.isArray(running)) running = [];
     for (const s of Object.values(db.sessions)) {
-      if (s.kind === "agent" && s.status === "running" && !running.includes(s.turnId) && s.dispatched < now() - LOST_AFTER)
+      // A turn handed to an earlier instance can't be reported any more (its answer would be refused).
+      if (s.kind === "agent" && s.status === "running" && s.dispatched < now() - lostAfter
+          && (s.runner?.instance !== instance || !running.includes(s.turnId)))
         finish(s, s.turnId, { ok: false, text: "The runner lost this turn (it probably restarted). Send the message again." });
     }
     if (free < 1 || off()) return {};
@@ -122,11 +171,19 @@ export function makeSessions(cfg, log) {
     if (!s) return {};
     s.status = "running";
     s.dispatched = now();
+    s.runner = { instance, turnId: s.turnId };
     save();
     return { turn: { turnId: s.turnId, sessionId: s.id, claudeId: s.claudeId, prompt: s.prompt, cwd: workspaces[s.workspace], timeoutSecs } };
   }
-  function runnerDone({ sessionId, turnId, ok, text, started }) {
-    return finish(db.sessions[sessionId], turnId, { ok: !!ok, text: String(text ?? ""), started });
+  // Returns null when the answer is refused: only the instance the turn was handed to may report it.
+  function runnerDone({ sessionId, turnId, ok, text, started }, instance) {
+    const s = db.sessions[sessionId];
+    if (!s || s.kind !== "agent" || s.turnId !== turnId) return false;
+    if (s.runner?.turnId !== turnId || s.runner.instance !== instance) {
+      refuse(`runner: answer for session ${s.id} from another instance refused`);
+      return null;
+    }
+    return finish(s, turnId, { ok: !!ok, text: String(text ?? ""), started });
   }
 
   function runnerApp() {
@@ -138,9 +195,14 @@ export function makeSessions(cfg, log) {
       if (!cc.runnerToken || !timingSafeEqual(got, want)) return res.status(401).end();
       next();
     });
+    const CONFLICT = { error: "another runner instance is active on this gateway" };
+    app.use((req, res, next) => pin(req.get("x-runner-instance")) ? next() : res.status(409).json(CONFLICT));
     app.use(express.json({ limit: "4mb" }));
-    app.post("/runner/next", (req, res) => res.json(runnerNext(req.body)));
-    app.post("/runner/done", (req, res) => res.json({ ok: runnerDone(req.body || {}) }));
+    app.post("/runner/next", (req, res) => res.json(runnerNext(req.body, req.get("x-runner-instance"))));
+    app.post("/runner/done", (req, res) => {
+      const ok = runnerDone(req.body || {}, req.get("x-runner-instance"));
+      ok === null ? res.status(409).json(CONFLICT) : res.json({ ok });
+    });
     return app;
   }
 
@@ -153,7 +215,7 @@ export function makeSessions(cfg, log) {
   const unread = s => s.replies.filter(r => r.n > s.read);
   const view = s => ({
     session_id: s.id, name: s.name, kind: s.kind === "egnyte" ? `egnyte (${s.mode})` : "normal",
-    workspace: s.kind === "egnyte" ? cc.egnyteRoot || "Z:\\" : s.workspace,
+    workspace: s.kind === "egnyte" ? egnyteRoot : s.workspace,
     status: s.status.replace("-local", ""), turns: s.turns, unread: unread(s).length,
   });
   const take = s => {
@@ -239,6 +301,7 @@ export function makeSessions(cfg, log) {
       run: () => ({
         sessions: Object.values(db.sessions).sort((a, b) => b.updated - a.updated).slice(0, 30).map(view),
         runner_last_seen_seconds_ago: runnerSeen ? now() - runnerSeen : null,
+        runner_conflicts: runnerConflicts,
         switched_off: off(),
         workspaces,
       }),
@@ -282,6 +345,7 @@ export function makeSessions(cfg, log) {
       },
     },
   };
+  if (!egnyteOn) { delete tools.start_egnyte_session; delete tools.send_egnyte_message; }
   for (const t of Object.values(tools)) {
     const run = t.run;
     t.run = async a => JSON.stringify(await run(a || {}), null, 2);

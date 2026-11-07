@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { makeContext, setLogFile } from "./gateway.mjs";
 import { startRunner } from "./runner.mjs";
+import { egnyteFlags, pathRule } from "./sessions.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-sess-"));
 const egnyte = path.join(tmp, "egnyte"), ws = path.join(tmp, "ws"), other = path.join(tmp, "other");
@@ -38,7 +39,7 @@ const runnerPort = await freePort();
 const claude = { command: process.execPath, args: [fake] };
 const cfg = {
   roots: [tmp], deny: [], denyNames: [], commands: {}, upstreams: [], stateFile: path.join(tmp, "state.json"),
-  claude: { ...claude, runnerToken: TOKEN, runnerPort, egnyteRoot: egnyte, workspaces: { projects: ws, other }, turnTimeoutSecs: 20 },
+  claude: { ...claude, runnerToken: TOKEN, runnerPort, egnyteRoot: egnyte, egnyteEnabled: true, workspaces: { projects: ws, other }, turnTimeoutSecs: 20 },
 };
 setLogFile(path.join(tmp, "gateway.log"));
 const call = async (ctx, name, args) => {
@@ -60,7 +61,7 @@ try {
   assert.equal(r.replies.length, 1, JSON.stringify(r));
   const t = r.replies[0].text;
   assert.match(t, /^new \| mode=dontAsk/);
-  assert.match(t, /allowed=Read,Glob,Grep/);
+  assert.ok(t.includes(`allowed=Read(${pathRule(egnyte)}),Glob,Grep |`), t);
   assert.match(t, /bash_denied=true/);
   assert.match(t, /rules=true/);
   assert.ok(t.includes("cwd=" + fs.realpathSync(egnyte)) || t.includes("cwd=" + egnyte), t);
@@ -72,8 +73,9 @@ try {
 
   // Egnyte, edit mode
   r = await call(ctx, "start_egnyte_session", { prompt: "fix the typo", mode: "edit", wait_seconds: 10 });
-  assert.match(r.replies[0].text, /mode=auto/);
-  assert.match(r.replies[0].text, /bash_denied=false/);
+  assert.match(r.replies[0].text, /mode=dontAsk/);
+  assert.ok(r.replies[0].text.includes(`allowed=Read(${pathRule(egnyte)}),Edit(${pathRule(egnyte)}),Glob,Grep |`), r.replies[0].text);
+  assert.match(r.replies[0].text, /bash_denied=true/);
   await assert.rejects(call(ctx, "start_egnyte_session", { prompt: "x", mode: "admin" }), /mode/);
 
   // Normal session: refused before the runner port is known to have a token
@@ -96,6 +98,67 @@ try {
   assert.match(r.replies[0].text, /^new \| mode=auto/);
   assert.ok(r.replies[0].text.includes(path.basename(ws)), r.replies[0].text);
   await assert.rejects(call(ctx, "send_egnyte_message", { session_id: sid, text: "x" }), /Not an Egnyte session/);
+
+  // One runner at a time: while the real runner polls, another instance (or one without an id) is refused and counted
+  const poll = (url, instance, route = "/runner/next", body = { running: [], free: 1 }) => fetch(url + route, {
+    method: "POST", body: JSON.stringify(body),
+    headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}`, ...(instance ? { "x-runner-instance": instance } : {}) },
+  });
+  const conflicts = async c => (await call(c, "list_sessions", {})).runner_conflicts;
+  const c0 = await conflicts(ctx);
+  assert.equal((await poll(base, "intruder-0001")).status, 409);
+  assert.equal((await poll(base, "intruder-0001", "/runner/done", { sessionId: sid, turnId: "x", ok: true, text: "forged" })).status, 409);
+  assert.equal((await poll(base, null)).status, 409);
+  assert.equal(await conflicts(ctx), c0 + 3);
+  let logText = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8");
+  assert.match(logText, /runner: second instance refused/);
+  assert.match(logText, /runner: request without an instance id refused .*setup-agent\.ps1/);
+  r = await call(ctx, "send_message", { session_id: sid, text: "still served", wait_seconds: 15 });
+  assert.match(r.replies[0].text, /prompt=still served/, "the real runner keeps working");
+
+  {
+    // Pinning, answers only from the instance a turn went to, and takeover after the pinned instance goes quiet
+    const cfgP = { ...cfg, stateFile: path.join(tmp, "p", "state.json"), claude: { ...cfg.claude, runnerLostAfterSecs: 1 } };
+    fs.mkdirSync(path.dirname(cfgP.stateFile));
+    const logBefore = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8").length;
+    const ctxP = makeContext(cfgP);
+    const srvP = ctxP.sessions.runnerApp().listen(await freePort(), "127.0.0.1");
+    try {
+      await new Promise(res => srvP.once("listening", res));
+      const baseP = `http://127.0.0.1:${srvP.address().port}`;
+      const A = "instance-aaaaaaaa", B = "instance-bbbbbbbb";
+      assert.deepEqual(await (await poll(baseP, A)).json(), {});
+      const pid = (await call(ctxP, "start_session", { prompt: "pinned work", wait_seconds: 0 })).session_id;
+      const { turn } = await (await poll(baseP, A)).json();
+      assert.equal(turn.sessionId, pid);
+      assert.equal((await poll(baseP, B)).status, 409, "a second instance is refused while A polls");
+      assert.equal(await conflicts(ctxP), 1);
+      await new Promise(res => setTimeout(res, 2100)); // A goes quiet past the lost-after window
+      const forged = { sessionId: pid, turnId: turn.turnId, ok: true, text: "forged" };
+      assert.equal((await poll(baseP, B, "/runner/done", forged)).status, 409, "B takes over but may not answer A's turn");
+      assert.equal(ctxP.sessions.get(pid).status, "running");
+      assert.equal(ctxP.sessions.get(pid).replies.length, 0);
+      assert.equal((await poll(baseP, A, "/runner/done", forged)).status, 409, "A is no longer served");
+      assert.deepEqual(await (await poll(baseP, B)).json(), {});
+      r = await call(ctxP, "read_messages", { session_id: pid });
+      assert.equal(r.replies.length, 1, JSON.stringify(r));
+      assert.equal(r.replies[0].ok, false);
+      assert.match(r.replies[0].text, /runner lost this turn/);
+      assert.equal(await conflicts(ctxP), 3);
+      const logP = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8").slice(logBefore);
+      assert.equal(logP.match(/runner: new instance/g)?.length, 2, logP);
+
+      // The pin survives a gateway restart: B gets the grace window, a newcomer is refused
+      const ctxR = makeContext(cfgP);
+      const srvR = ctxR.sessions.runnerApp().listen(await freePort(), "127.0.0.1");
+      try {
+        await new Promise(res => srvR.once("listening", res));
+        const baseR = `http://127.0.0.1:${srvR.address().port}`;
+        assert.equal((await poll(baseR, "instance-cccccccc")).status, 409, "a newcomer can't take the pin after a restart");
+        assert.equal((await poll(baseR, B)).status, 200);
+      } finally { srvR.close(); }
+    } finally { srvP.close(); }
+  }
 
   // Messages sent while a turn runs are batched into the next turn
   r = await call(ctx, "send_message", { session_id: sid, text: "SLEEP first", wait_seconds: 0 });
@@ -136,6 +199,26 @@ try {
   r = await call(makeContext(cfg2), "start_egnyte_session", { prompt: "x", mode: "read", wait_seconds: 5 });
   assert.equal(r.replies[0].ok, false);
   assert.match(r.replies[0].text, /not mounted/);
+
+  // Egnyte tools are opt-in on the PC
+  const cfg3 = { ...cfg, stateFile: path.join(tmp, "c", "state.json"), claude: { ...cfg.claude, egnyteEnabled: undefined } };
+  fs.mkdirSync(path.dirname(cfg3.stateFile));
+  const off3 = (await makeContext(cfg3).listTools()).map(t => t.name);
+  assert.ok(!off3.includes("start_egnyte_session") && !off3.includes("send_egnyte_message") && off3.includes("start_session"), off3.join());
+
+  // Egnyte flags on Windows: no shell, files only inside the Egnyte root, every other drive and the profile denied
+  assert.equal(pathRule("Z:\\"), "//z/**");
+  assert.equal(pathRule("Z:\\Shared\\Team\\"), "//z/Shared/Team/**");
+  for (const mode of ["read", "edit"]) {
+    const f = egnyteFlags(mode, "Z:\\");
+    const allowed = f.slice(f.indexOf("--allowedTools") + 1, f.indexOf("--disallowedTools")), denied = f.slice(f.indexOf("--disallowedTools") + 1);
+    assert.equal(f[f.indexOf("--permission-mode") + 1], "dontAsk");
+    assert.deepEqual(allowed, mode === "edit" ? ["Read(//z/**)", "Edit(//z/**)", "Glob", "Grep"] : ["Read(//z/**)", "Glob", "Grep"]);
+    for (const d of ["Bash", "PowerShell", "WebFetch", "Agent", "Read(//c/**)", "Edit(//c/**)", "Read(//d/**)", "Read(~/**)", "Edit(~/**)", "Read(**/.env*)"])
+      assert.ok(denied.includes(d), `${mode} denies ${d}`);
+    assert.ok(!denied.some(d => d.includes("//z/")), "Z: is not denied");
+    assert.equal(denied.includes("Edit"), mode === "read");
+  }
 
   // Sessions survive a restart
   list = await call(makeContext(cfg), "list_sessions", {});

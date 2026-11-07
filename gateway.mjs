@@ -19,7 +19,7 @@ import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { makeSessions } from "./sessions.mjs";
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAX_READ = 1 << 20, MAX_OUT = 60_000, MAX_LIST = 500;
 const ACCESS_TTL = 3600, REFRESH_TTL = 30 * 86400, CODE_TTL = 300, LOGIN_TTL = 600, MAX_TRIES = 5;
@@ -67,23 +67,28 @@ const globRe = g => new RegExp("^" + g.replace(/[.+^${}()|[\]\\]/g, "\\$&").repl
 
 export function makeGuard(cfg) {
   const real = p => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
-  const roots = cfg.roots.map(r => norm(real(r)));
-  const deny = (cfg.deny || []).map(norm);
+  // A configured folder can be spelled two ways: as written (a link, a short name like RUNNER~1) and as its real path.
+  // Paths from callers and ripgrep use the first, realpath gives the second, so roots and deny entries match both.
+  const both = list => [...new Set(list.flatMap(p => [norm(p), norm(real(p))]))];
+  const realRoots = cfg.roots.map(r => norm(real(r)));
+  const roots = both(cfg.roots);
+  const deny = both(cfg.deny || []);
   const names = (cfg.denyNames || []).map(globRe);
   const deniedName = n => names.some(re => re.test(n));
-  // Checks a resolved path string; used directly on ripgrep output.
-  const allowed = p => {
+  const inside = (p, rs) => {
     const n = norm(p);
-    return roots.some(r => within(n, r)) && !deny.some(d => within(n, d)) && !n.split(path.sep).some(deniedName);
+    return rs.some(r => within(n, r)) && !deny.some(d => within(n, d)) && !n.split(path.sep).some(deniedName);
   };
+  // Checks a path string without touching the disk; used directly on ripgrep output (ripgrep doesn't follow links).
+  const allowed = p => inside(p, roots);
   // Lexical check first, so UNC/device paths never reach the filesystem (no SMB connection, no NTLM hash leak);
-  // then realpath follows junctions/symlinks, so a link inside a root can't point outside it.
+  // then realpath follows junctions/symlinks, and the real path must be under a root's real path.
   const check = p => {
     if (typeof p !== "string" || !p) throw new Error("path is required");
     if (!/^[A-Za-z]:[\\/]/.test(p) || !allowed(path.resolve(p))) throw new Error(`not allowed: ${p}`);
     let abs;
     try { abs = fs.realpathSync.native(path.resolve(p)); } catch { throw new Error(`not found: ${p}`); }
-    if (!allowed(abs)) throw new Error(`not allowed: ${p}`);
+    if (!inside(abs, realRoots)) throw new Error(`not allowed: ${p}`);
     return abs;
   };
   return { check, allowed, deniedName };
@@ -372,6 +377,8 @@ export function createApp(cfg, ctx) {
 }
 
 async function main() {
+  // Before loadConfig, so a missing or broken config.json is reported rather than thrown.
+  if (process.argv[2] === "doctor") { process.exitCode = await (await import("./doctor.mjs")).runDoctor(); return; }
   const cfg = loadConfig();
   if (process.argv[2] === "set-passphrase") {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

@@ -42,6 +42,10 @@ try {
   for (const bad of [path.join(root, "..", "outside", "secret.txt"), path.join(root, "jump", "secret.txt"), path.join(root, ".env"),
     path.join(root, "blocked", "x.txt"), "C:\\Windows\\win.ini", "Z:\\", "", "sub\\hello.txt",
     "\\\\127.0.0.1\\c$\\x", "//127.0.0.1/c$/x", "\\\\?\\" + path.join(root, "sub", "hello.txt")]) assert.throws(() => g.check(bad), /not allowed|required/, `allowed: ${bad}`);
+  // The same folders by their real path (on CI the temp dir is a short name like RUNNER~1): roots still work, deny still holds.
+  const realRoot = fs.realpathSync.native(root);
+  assert.ok(g.check(path.join(realRoot, "sub", "hello.txt")));
+  assert.throws(() => g.check(path.join(realRoot, "blocked", "x.txt")), /not allowed/);
 
   // tools
   const ctx = makeContext(cfg);

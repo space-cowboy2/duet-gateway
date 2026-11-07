@@ -57,8 +57,8 @@
     "runnerPort": 8788,
     "runnerToken": "",
     "egnyteRoot": "Z:\\",
+    "egnyteEnabled": false,
     "workspaces": {
-      "projects": "D:\\Projects",
       "duet": "D:\\Duet"
     },
     "maxParallel": 2,

@@ -20,6 +20,11 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    # The runner's default TEMP is an 8.3 short path (C:\Users\RUNNER~1\...). The path guard resolves roots
+    # to their long form, so the self-tests' temp roots must start from a long path too.
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6

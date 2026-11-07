@@ -377,6 +377,8 @@ export function createApp(cfg, ctx) {
 }
 
 async function main() {
+  // Before loadConfig, so a missing or broken config.json is reported rather than thrown.
+  if (process.argv[2] === "doctor") { process.exitCode = await (await import("./doctor.mjs")).runDoctor(); return; }
   const cfg = loadConfig();
   if (process.argv[2] === "set-passphrase") {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

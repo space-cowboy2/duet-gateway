@@ -1,7 +1,6 @@
 name: setup-agent
 on:
   push:
-  pull_request:
   workflow_dispatch:
 
 # Runs setup-agent.ps1 for real on a throwaway Windows machine (GitHub's runners are elevated):
@@ -10,6 +9,9 @@ jobs:
   setup-agent:
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      # A fixed folder outside the checkout (RUNNER_TEMP did not keep files between steps).
+      FAKE: D:\duet-ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,7 +22,7 @@ jobs:
       - name: Fake machine (workspace, protected folder, ~\.ssh, config.json, claude.exe, token)
         shell: powershell
         run: |
-          $t = $env:RUNNER_TEMP
+          $t = $env:FAKE
           New-Item -ItemType Directory -Force "$t\Workspace\mine\.git", "$t\Protect\repo", "$env:USERPROFILE\.ssh" | Out-Null
           Set-Content "$env:USERPROFILE\.ssh\probe" "not a key"
           Copy-Item config.example.json config.json
@@ -31,14 +33,14 @@ jobs:
       - name: Run setup-agent.ps1
         shell: powershell
         run: |
-          $t = $env:RUNNER_TEMP
+          $t = $env:FAKE
           .\setup-agent.ps1 -Workspaces "$t\Workspace" -Protect "$t\Protect" -ClaudeExe "$t\claude.exe" `
             -ClaudeTokenFile "$t\claude-token" -GatewayDir $PWD.Path -NoRestartGateway *>&1 | Tee-Object -FilePath "$t\setup.log"
 
       - name: Check the probe, the runner and config.json
         shell: powershell
         run: |
-          $t = $env:RUNNER_TEMP
+          $t = $env:FAKE
           $r = Get-Content -Raw C:\ProgramData\duet-agent\logs\probe.json | ConvertFrom-Json
           Write-Host "probe ran as $($r.user)"
           $r.checks | ForEach-Object { Write-Host ("  {0,-5} {1}  {2}" -f $(if ($_.pass) { "ok" } else { "FAIL" }), $_.name, $_.detail) }
@@ -58,7 +60,7 @@ jobs:
       - name: A leaky protected folder makes setup fail and leaves the runner off
         shell: powershell
         run: |
-          $t = $env:RUNNER_TEMP
+          $t = $env:FAKE
           # A subfolder that does not inherit the deny and that duet-agent may modify.
           New-Item -ItemType Directory -Force "$t\Protect\leaky" | Out-Null
           icacls "$t\Protect\leaky" /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "duet-agent:(OI)(CI)M" | Out-Null
@@ -77,7 +79,7 @@ jobs:
       - name: Uninstall
         shell: powershell
         run: |
-          $t = $env:RUNNER_TEMP
+          $t = $env:FAKE
           .\setup-agent.ps1 -Uninstall -Workspaces "$t\Workspace" -Protect "$t\Protect"
           if (Get-LocalUser duet-agent -ErrorAction SilentlyContinue) { throw "user duet-agent is still there" }
           if (Get-ScheduledTask duet-agent-* -ErrorAction SilentlyContinue) { throw "a duet-agent task is still there" }

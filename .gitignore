@@ -2,3 +2,5 @@ node_modules/
 config.json
 state.json
 gateway.log
+sessions.json
+duet.OFF

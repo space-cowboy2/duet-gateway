@@ -1,12 +1,13 @@
 {
   "name": "duet-gateway",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node gateway.mjs",
-    "check": "node selfcheck.mjs",
-    "set-passphrase": "node gateway.mjs set-passphrase"
+    "check": "node selfcheck.mjs && node sessioncheck.mjs",
+    "set-passphrase": "node gateway.mjs set-passphrase",
+    "check:sessions": "node sessioncheck.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.31.0",

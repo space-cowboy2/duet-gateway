@@ -51,5 +51,17 @@
         "refresh_transactions"
       ]
     }
-  ]
+  ],
+  "claude": {
+    "command": "C:\\Users\\trand\\.local\\bin\\claude.exe",
+    "runnerPort": 8788,
+    "runnerToken": "",
+    "egnyteRoot": "Z:\\",
+    "workspaces": {
+      "projects": "D:\\Projects",
+      "duet": "D:\\Duet"
+    },
+    "maxParallel": 2,
+    "turnTimeoutSecs": 3600
+  }
 }

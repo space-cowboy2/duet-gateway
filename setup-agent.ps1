@@ -224,16 +224,13 @@ try {
       if ([IO.File]::Exists($f)) { throw "the file is still there" }
     } $f
   }
-  foreach ($p in $in.protect) {
-    # The folder and its subfolders: a subfolder with inheritance turned off would not get the deny.
-    $dirs = @($p)
-    try { $dirs += @([IO.Directory]::GetDirectories($p) | Select-Object -First 200) } catch {}
-    foreach ($d in $dirs) {
-      $f = "$d\.duet-probe-$($in.tag)"
-      $id = if ($d -eq $p) { "protect:$p" } else { "protect-sub:$d" }
-      Test-Access $id "create a file in $d" "denied" { [IO.File]::Open($f, "CreateNew", "Write").Dispose() } $f
-      if ([IO.File]::Exists($f)) { try { [IO.File]::Delete($f) } catch {} }
-    }
+  # The folders and the ones directly inside them (setup lists those, as duet-agent may not be able to).
+  # A subfolder with inheritance turned off does not get the deny.
+  foreach ($item in @($in.protect | ForEach-Object { "protect:$_" }) + @($in.protectSubs | ForEach-Object { "protect-sub:$_" })) {
+    $id = $item; $d = ($item -split ":", 2)[1]
+    $f = "$d\.duet-probe-$($in.tag)"
+    Test-Access $id "create a file in $d" "denied" { [IO.File]::Open($f, "CreateNew", "Write").Dispose() } $f
+    if ([IO.File]::Exists($f)) { try { [IO.File]::Delete($f) } catch {} }
   }
   Test-Access "config" "read $($in.config)" "denied" { [IO.File]::OpenRead($in.config).Dispose() }
   Test-Access "profile" "list $($in.profile)" "denied" { [IO.Directory]::GetFileSystemEntries($in.profile) }
@@ -252,6 +249,8 @@ Step "Checking what $UserName can and cannot do"
 $sshDir = Join-Path $env:USERPROFILE ".ssh"
 $probeIn = [ordered]@{
   tag = New-Secret 9; workspaces = @($ws); protect = @($Protect | Where-Object { Test-Path -LiteralPath $_ })
+  protectSubs = @($Protect | ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory -Force -ErrorAction SilentlyContinue | Select-Object -First 200 } |
+    ForEach-Object { $_.FullName })
   egnyteRoot = $EgnyteRoot; config = $Config; profile = $env:USERPROFILE
   ssh = $(if (Test-Path -LiteralPath $sshDir) { $sshDir } else { $null })
   sshFiles = @(Get-ChildItem -LiteralPath $sshDir -File -Recurse -Force -ErrorAction SilentlyContinue | Select-Object -First 20 | ForEach-Object { $_.FullName })
@@ -293,7 +292,8 @@ if (-not $r) {
 if ($r.error) { throw "The sandbox probe failed to run: $($r.error)" }
 if ("$($r.user)" -notlike "*\$UserName") { throw "The sandbox probe ran as '$($r.user)', not $UserName." }
 $checks = @($r.checks)
-$need = @("notadmin", "config", "profile", "egnyte") + @($probeIn.workspaces | ForEach-Object { "workspace:$_" }) + @($probeIn.protect | ForEach-Object { "protect:$_" })
+$need = @("notadmin", "config", "profile", "egnyte") + @($probeIn.workspaces | ForEach-Object { "workspace:$_" }) + @($probeIn.protect | ForEach-Object { "protect:$_" }) +
+  @($probeIn.protectSubs | ForEach-Object { "protect-sub:$_" })
 if ($probeIn.ssh) { $need += "ssh" }
 $bad = @()
 foreach ($id in $need) { if (-not ($checks | Where-Object { $_.id -eq $id })) { $bad += "${id}: missing from the probe's report" } }

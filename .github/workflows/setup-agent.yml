@@ -29,9 +29,6 @@ jobs:
           # Stands in for claude.exe: node.exe --version works on its own, which is all setup checks.
           Copy-Item (Get-Command node).Source "$t\claude.exe"
           [IO.File]::WriteAllText("$t\claude-token", "sk-ant-test")
-          Get-ChildItem -Force $t | Format-Table Mode, Length, Name -AutoSize | Out-String | Write-Host
-          Write-Host "token file is a leaf: $(Test-Path -LiteralPath "$t\claude-token" -PathType Leaf)"
-
       - name: Run setup-agent.ps1
         shell: powershell
         run: |

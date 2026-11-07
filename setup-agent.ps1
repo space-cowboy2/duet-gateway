@@ -95,7 +95,7 @@ if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
 } else {
   Step "Creating user $UserName (standard user, hidden from the sign-in screen)"
   New-LocalUser -Name $UserName -Password $sec -PasswordNeverExpires -UserMayNotChangePassword -AccountNeverExpires `
-    -Description "Runs Claude Code sessions for Duet (duet-gateway)" | Out-Null
+    -Description "Runs Claude Code sessions for Duet" | Out-Null
 }
 Add-LocalGroupMember -SID "S-1-5-32-545" -Member $UserName -ErrorAction SilentlyContinue
 Remove-LocalGroupMember -SID "S-1-5-32-544" -Member $UserName -ErrorAction SilentlyContinue

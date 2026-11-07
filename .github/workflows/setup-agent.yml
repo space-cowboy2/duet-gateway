@@ -1,0 +1,98 @@
+name: setup-agent
+on:
+  push:
+  workflow_dispatch:
+
+# Runs setup-agent.ps1 for real on a throwaway Windows machine (GitHub's runners are elevated):
+# creates duet-agent, proves the sandbox with the probe, starts the runner, then uninstalls.
+jobs:
+  setup-agent:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      # A fixed folder outside the checkout (RUNNER_TEMP did not keep files between steps).
+      FAKE: D:\duet-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+
+      - name: Fake machine (workspace, protected folder, ~\.ssh, config.json, claude.exe, token)
+        shell: powershell
+        run: |
+          $t = $env:FAKE
+          wevtutil sl Microsoft-Windows-TaskScheduler/Operational /e:true   # for the failure dump below
+          New-Item -ItemType Directory -Force "$t\Workspace\mine\.git", "$t\Protect\repo", "$env:USERPROFILE\.ssh" | Out-Null
+          # Like a data drive where every signed-in user may modify: only setup's explicit deny should stop duet-agent.
+          icacls $t /grant "*S-1-5-32-545:(OI)(CI)M" /Q | Out-Null
+          Set-Content "$env:USERPROFILE\.ssh\probe" "not a key"
+          Copy-Item config.example.json config.json
+          # Stands in for claude.exe: node.exe --version works on its own, which is all setup checks.
+          Copy-Item (Get-Command node).Source "$t\claude.exe"
+          [IO.File]::WriteAllText("$t\claude-token", "sk-ant-test")
+      - name: Run setup-agent.ps1
+        shell: powershell
+        run: |
+          $t = $env:FAKE
+          .\setup-agent.ps1 -Workspaces "$t\Workspace" -Protect "$t\Protect" -ClaudeExe "$t\claude.exe" `
+            -ClaudeTokenFile "$t\claude-token" -GatewayDir $PWD.Path -NoRestartGateway *>&1 | Tee-Object -FilePath "$t\setup.log"
+
+      - name: Check the probe, the runner and config.json
+        shell: powershell
+        run: |
+          $t = $env:FAKE
+          $r = Get-Content -Raw C:\ProgramData\duet-agent\logs\probe.json | ConvertFrom-Json
+          Write-Host "probe ran as $($r.user)"
+          $r.checks | ForEach-Object { Write-Host ("  {0,-5} {1}  {2}" -f $(if ($_.pass) { "ok" } else { "FAIL" }), $_.name, $_.detail) }
+          if (@($r.checks | Where-Object { $_.pass -ne $true }).Count) { throw "probe failed" }
+          foreach ($id in "notadmin", "config", "profile", "ssh", "egnyte", "workspace:$t\Workspace", "protect:$t\Protect", "protect-sub:$t\Protect\repo") {
+            if (-not ($r.checks | Where-Object { $_.id -eq $id })) { throw "probe skipped $id" }
+          }
+          if (-not (Select-String -Quiet -SimpleMatch "Workspace\mine\.git" "$t\setup.log")) { throw "no warning about the repo owned by the installing user" }
+          $log = Get-Content -Raw C:\ProgramData\duet-agent\logs\runner.log
+          if ($log -notmatch "runner started") { throw "runner.log: $log" }
+          if ((Get-ScheduledTask duet-agent-runner).State -ne "Running") { throw "runner task is not running" }
+          if (Get-ScheduledTask duet-agent-probe -ErrorAction SilentlyContinue) { throw "probe task left behind" }
+          $cfg = Get-Content -Raw config.json | ConvertFrom-Json
+          if ($cfg.claude.workspaces.workspace -ne "$t\Workspace") { throw "config.json claude.workspaces: $($cfg.claude.workspaces | ConvertTo-Json -Compress)" }
+          if (-not $cfg.claude.runnerToken) { throw "config.json has no runner token" }
+
+      - name: A leaky protected folder makes setup fail and leaves the runner off
+        shell: powershell
+        run: |
+          $t = $env:FAKE
+          # A subfolder that does not inherit the deny and that duet-agent may modify.
+          New-Item -ItemType Directory -Force "$t\Protect\leaky" | Out-Null
+          icacls "$t\Protect\leaky" /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "duet-agent:(OI)(CI)M" | Out-Null
+          $msg = $null
+          try {
+            .\setup-agent.ps1 -Workspaces "$t\Workspace" -Protect "$t\Protect" -ClaudeExe "$t\claude.exe" `
+              -ClaudeTokenFile "$t\claude-token" -GatewayDir $PWD.Path -NoRestartGateway
+          } catch { $msg = "$_" }
+          Write-Host "setup said: $msg"
+          if (-not $msg) { throw "setup passed with a writable protected folder" }
+          if ($msg -notmatch "leaky") { throw "setup failed for another reason" }
+          if (Get-ChildItem -Force "$t\Protect\leaky") { throw "the probe left a file in the leaky folder" }
+          $task = Get-ScheduledTask duet-agent-runner
+          if ($task.State -ne "Disabled") { throw "runner task is $($task.State), not Disabled" }
+
+      - name: On failure, show Task Scheduler and logon-failure events
+        if: failure()
+        shell: powershell
+        run: |
+          Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational -MaxEvents 15 -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "$($_.TimeCreated) $($_.Id) $(($_.Message -split "`n")[0])" }
+          Get-WinEvent -FilterHashtable @{ LogName = "Security"; Id = 4625 } -MaxEvents 3 -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host ($_.Message -split "`n" | Select-String "Failure Reason|Logon Type|Account Name" | Out-String) }
+          Get-Content C:\ProgramData\duet-agent\logs\runner.log -Tail 5 -ErrorAction SilentlyContinue
+
+      - name: Uninstall
+        shell: powershell
+        run: |
+          $t = $env:FAKE
+          .\setup-agent.ps1 -Uninstall -Workspaces "$t\Workspace" -Protect "$t\Protect"
+          if (Get-LocalUser duet-agent -ErrorAction SilentlyContinue) { throw "user duet-agent is still there" }
+          if (Get-ScheduledTask duet-agent-* -ErrorAction SilentlyContinue) { throw "a duet-agent task is still there" }
+          if (Test-Path C:\ProgramData\duet-agent) { throw "C:\ProgramData\duet-agent is still there" }

@@ -51,12 +51,15 @@ In an elevated PowerShell in this folder:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
 ```
-It creates `duet-agent`, copies `runner.mjs`, `claude.mjs` and `claude.exe` to `C:\ProgramData\duet-agent`, gives the user modify rights on the workspaces (default `D:\Duet`; change with `-Workspaces`), denies it writes in `-Protect` folders (default `D:\Projects`), asks for a token from `claude setup-token` (run that in a normal terminal), fills in `claude` in `config.json`, and starts the `duet-agent-runner` task at every boot.
+It creates `duet-agent`, copies `runner.mjs`, `claude.mjs` and `claude.exe` to `C:\ProgramData\duet-agent`, gives the user modify rights on the workspaces (default `D:\Duet`; change with `-Workspaces`), denies it writes in `-Protect` folders (default `D:\Projects`), limits `config.json` to you, SYSTEM and Administrators, asks for a token from `claude setup-token` (run that in a normal terminal), fills in `claude` in `config.json`, and starts the `duet-agent-runner` task at every boot.
+
+Before it starts the runner, it proves the sandbox. A one-off task runs a probe as `duet-agent` and prints each result. The probe must be able to write and delete a file in every workspace. It must fail to create a file in every `-Protect` folder and the folders directly inside it, see `Z:\` (`-EgnyteRoot`, default: `egnyteRoot` from `config.json`), read `config.json`, or list your profile and `.ssh`. If any check goes the wrong way, setup stops, says which check failed, and leaves the runner off. It also warns you if a workspace holds a git repo that you own: git run as you trusts that repo, so `duet-agent` could plant hooks in it. Move that repo out of the workspace.
 
 - Update the runner or Claude Code: run the script again. If you set it up before `D:\Projects` stopped being a workspace, run it again now: it removes that grant. New sign-in token: add `-NewClaudeToken`.
+- No prompts (scripts, CI): `-ClaudeTokenFile <file holding the sk-ant- token>`, `-GatewayDir <folder with gateway.mjs and config.json>` (default: the script's folder), `-NoRestartGateway`. `.github/workflows/setup-agent.yml` runs it this way on a fresh Windows machine on every push.
 - Remove everything: `setup-agent.ps1 -Uninstall`.
 
-Canary checks after setup (ask Duet):
+Canary checks after setup (ask Duet). Setup's probe already covers 1 and 2 as `duet-agent`; these check the same thing through a real session:
 1. "Start a session and run `dir Z:\` and `type C:\Users\trand\duet-gateway\config.json`": both must fail.
 2. "Start a session and create `D:\Projects\canary.txt`": must fail.
 3. "Start a session in duet and create hello.txt": `D:\Duet\hello.txt` appears.

@@ -2,17 +2,21 @@
 # Makes a separate Windows user, "duet-agent", that cannot see Z:\ (Egnyte) or your profile, and starts
 # runner.mjs as that user at every boot. Run it from an elevated PowerShell in the duet-gateway folder:
 #   powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
-# Run it again to update the runner or Claude Code. Add -NewClaudeToken to replace the sign-in token,
+# Run it again to update the runner or Claude Code.
+# Anything inside a workspace that runs as you (like the TV plugin) belongs in -Protect. Add -NewClaudeToken to replace the sign-in token,
 # or -Uninstall to remove the user, the task and the folder.
 [CmdletBinding()]
 param(
   [string]$UserName = "duet-agent",
   [string[]]$Workspaces = @("D:\Projects", "D:\Duet"),
+  # Code that runs as you (the gateway's upstream servers). duet-agent may read it but never change it.
+  [string[]]$Protect = @("D:\Projects\tv-remote-plugin"),
   [string]$ClaudeExe = "$env:USERPROFILE\.local\bin\claude.exe",
   [switch]$NewClaudeToken,
   [switch]$Uninstall
 )
 $ErrorActionPreference = "Stop"
+$Workspaces = $Workspaces | ForEach-Object { $_.TrimEnd("\") }
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run this from an elevated PowerShell (right-click PowerShell > Run as administrator)." }
 
@@ -33,7 +37,7 @@ if ($Uninstall) {
   Step "Removing task, user and $Base"
   Unregister-ScheduledTask -TaskName $Task -Confirm:$false -ErrorAction SilentlyContinue
   Get-Process node, claude -IncludeUserName -ErrorAction SilentlyContinue | Where-Object { $_.UserName -like "*\$UserName" } | Stop-Process -Force
-  foreach ($w in $Workspaces) { if (Test-Path $w) { icacls $w /remove:g $UserName /T /C /Q | Out-Null } }
+  foreach ($w in $Workspaces + $Protect) { if (Test-Path $w) { icacls $w /remove $UserName /T /C /Q | Out-Null } }
   Remove-LocalUser -Name $UserName -ErrorAction SilentlyContinue
   Remove-Item $Base -Recurse -Force -ErrorAction SilentlyContinue
   Write-Host "Done. C:\Users\$UserName (its profile) is left in place; delete it in System > About > Advanced > User Profiles if you want."
@@ -71,6 +75,9 @@ icacls $Base /inheritance:r /grant:r "${Admins}:(OI)(CI)F" "${System}:(OI)(CI)F"
 icacls "$Base\logs" /grant "${UserName}:(OI)(CI)M" /Q | Out-Null
 Copy-Item "$Repo\runner.mjs", "$Repo\claude.mjs" "$Base\bin" -Force
 Copy-Item $ClaudeExe "$Base\bin\claude.exe" -Force
+$v = & "$Base\bin\claude.exe" --version 2>&1
+if ($LASTEXITCODE) { throw "The copied claude.exe does not run on its own: $v" }
+Write-Host "   Claude Code $v"
 
 # 3. Tokens. The runner token lets the runner ask the gateway for work on 127.0.0.1 only.
 if (-not (Test-Path "$Base\runner-token")) { Write-Text "$Base\runner-token" (New-Secret 32) }
@@ -98,6 +105,11 @@ foreach ($w in $Workspaces) {
   $ws += $w
 }
 if (-not $ws) { throw "No workspace folders." }
+foreach ($p in $Protect) {
+  if (-not (Test-Path $p)) { continue }
+  Step "Blocking $UserName from changing $p (it runs as you)"
+  icacls $p /deny "${UserName}:(OI)(CI)(W,D,DC)" /Q | Out-Null
+}
 
 # 5. Runner settings, and the gateway's side of them.
 $runner = [ordered]@{
@@ -118,6 +130,13 @@ Register-ScheduledTask -TaskName $Task -Action $action -Trigger (New-ScheduledTa
   -User "$env:COMPUTERNAME\$UserName" -Password $pw -RunLevel Limited -Force | Out-Null
 $pw = $null
 Start-ScheduledTask -TaskName $Task
+Start-Sleep 6
+$info = Get-ScheduledTaskInfo -TaskName $Task
+$tail = Get-Content "$Base\logs\runner.log" -Tail 3 -ErrorAction SilentlyContinue
+if (-not ($tail -match "runner started")) {
+  Write-Warning "The runner did not start (task result $($info.LastTaskResult)). Last log lines:"
+  $tail | ForEach-Object { Write-Host "   $_" }
+} else { Write-Host "   runner is running" -ForegroundColor Green }
 
 # 7. Restart the gateway so it opens the runner port.
 if (Get-ScheduledTask -TaskName "duet-gateway" -ErrorAction SilentlyContinue) {

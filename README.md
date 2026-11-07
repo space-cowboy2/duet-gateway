@@ -21,7 +21,7 @@ Duet ──OAuth──▶ Tailscale Funnel ──▶ gateway.mjs (you, desktop l
                                                                               only in D:\Projects and D:\Duet
 ```
 
-- **Normal sessions** edit files, run commands and use git without asking. They run as `duet-agent`, a standard Windows user. Windows itself keeps that user out of `C:\Users\trand` (`.ssh`, `plaid-bridge`, Claude's sign-in, Egnyte's cache) and it has no Z:\ drive. It has no GitHub sign-in, so it cannot push.
+- **Normal sessions** edit files, run commands and use git without asking. They run as `duet-agent`, a standard Windows user. Windows itself keeps that user out of `C:\Users\trand` (`.ssh`, `plaid-bridge`, Claude's sign-in, Egnyte's cache) and it has no Z:\ drive. It has no GitHub sign-in, so it cannot push. Folders inside a workspace that hold code running as you (the TV plugin) are write-protected from it (`-Protect` in `setup-agent.ps1`); add any others there.
 - **Egnyte sessions** need your tap: in claude.ai, open the connector's tool settings and set `start_egnyte_session` and `send_egnyte_message` to **Needs approval**. The approval card shows `mode`: `read` can only read files; `edit` can change them, and changes sync to the company. Web tools and your secret folders are blocked in both modes. Z:\ only exists while you are signed in to the desktop.
 - Each message is one turn of `claude -p`; the session remembers earlier turns. Calls wait up to 45 s for the answer; after that, Duet uses `read_messages`.
 - Every session is told never to send messages, post, buy, move money or touch credentials. Duet reads your email, so treat these as guards, not walls: a normal session has a real shell inside its workspaces.

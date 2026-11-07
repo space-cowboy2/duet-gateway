@@ -303,7 +303,13 @@ foreach ($c in $checks) {
   # A protected-folder write that should have been refused may have left its file behind.
   if ($c.file -and "$($c.id)" -like "protect*" -and (Test-Path -LiteralPath $c.file)) { Remove-Item -LiteralPath $c.file -Force -ErrorAction SilentlyContinue }
 }
-if ($bad) { throw "The sandbox is not tight, so the runner was not started. Failed:`n  " + ($bad -join "`n  ") }
+if ($bad) {
+  $hint = if ($bad -match "^create a file in ") {
+    "`nA protected subfolder that $UserName can write has its own allow entry or no inheritance. Deny it there too:" +
+    "`n  icacls <folder> /deny ${UserName}:(OI)(CI)(W,D,DC)"
+  }
+  throw "The sandbox is not tight, so the runner was not started. Failed:`n  " + ($bad -join "`n  ") + $hint
+}
 Write-Host "   sandbox ok" -ForegroundColor Green
 
 # 6. Runner settings, and the gateway's side of them.

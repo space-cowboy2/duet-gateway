@@ -1,0 +1,55 @@
+{
+  "port": 8787,
+  "publicUrl": "https://pc.tail24f732.ts.net",
+  "passphraseHash": "",
+  "roots": [
+    "D:\\Projects",
+    "C:\\Users\\trand\\Documents"
+  ],
+  "deny": [
+    "Z:\\",
+    "C:\\Users\\trand\\.config",
+    "C:\\Users\\trand\\.claude",
+    "C:\\Users\\trand\\.remember",
+    "C:\\Users\\trand\\plaid-bridge",
+    "C:\\Users\\trand\\duet-gateway",
+    "C:\\Users\\trand\\AppData"
+  ],
+  "denyNames": [
+    ".env",
+    ".env.*",
+    "*.key",
+    "*.pem",
+    "*.pfx",
+    "*.db",
+    "*.sqlite",
+    "vault*",
+    "id_rsa*",
+    "id_ed25519*",
+    ".git",
+    ".remember"
+  ],
+  "commands": {},
+  "upstreams": [
+    {
+      "prefix": "tv",
+      "command": "python",
+      "args": [
+        "D:\\Projects\\tv-remote-plugin\\claude-plugin\\server\\tv_mcp.py"
+      ]
+    },
+    {
+      "prefix": "money",
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\trand\\plaid-bridge\\server.mjs"
+      ],
+      "allow": [
+        "status",
+        "get_balances",
+        "sync_transactions",
+        "refresh_transactions"
+      ]
+    }
+  ]
+}

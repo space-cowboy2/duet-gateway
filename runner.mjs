@@ -1,5 +1,6 @@
-// runner.mjs: runs normal Duet sessions with full autonomy, as the separate Windows user "duet-agent".
-// setup-agent.ps1 copies this file and claude.mjs to C:\ProgramData\duet-agent\bin and starts it at boot.
+// runner.mjs: runs normal Duet sessions with full autonomy, as the separate user "duet-agent".
+// setup-agent.ps1 (Windows) copies this file and claude.mjs to C:\ProgramData\duet-agent\bin and starts it at boot;
+// setup-agent-mac.sh does the same in /Library/Application Support/duet-agent with a LaunchDaemon.
 // It asks the gateway for work on a loopback-only port, so it never takes calls from the internet.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";

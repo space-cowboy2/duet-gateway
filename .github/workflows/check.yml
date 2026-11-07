@@ -16,6 +16,19 @@ jobs:
       - run: npm ci
       - run: npm run check
 
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install ripgrep (files_search uses it)
+        run: brew install ripgrep
+      - run: npm ci
+      - run: npm run check
+      - run: bash -n setup-agent-mac.sh && bash -n gateway-launchd.sh
+
   linux:
     runs-on: ubuntu-latest
     steps:

@@ -4,3 +4,4 @@ state.json
 gateway.log
 sessions.json
 duet.OFF
+gateway.out

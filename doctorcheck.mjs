@@ -59,7 +59,7 @@ const run = async (probe, opts = {}) => {
   assert.match(by("runner task").detail, /Running/);
   assert.match(by("runner log").detail, /turn s_1 done$/);
   assert.match(by("Egnyte drive").detail, /mounted/);
-  for (const line of text.split("\n")) assert.match(line, /^(ok  |warn|fail) [^:]+: /);
+  for (const line of text.split("\n")) assert.match(line, /^(ok  |warn|fail) \S.*?: \S/);
 }
 
 // 2. Config: missing, broken (the error must not quote the file), not an object.

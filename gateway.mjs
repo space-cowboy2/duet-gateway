@@ -10,7 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
-import { InvalidTokenError, InvalidGrantError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { InvalidTokenError, InvalidGrantError, InvalidClientMetadataError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { execFile } from "node:child_process";
 import { randomBytes, scryptSync, timingSafeEqual, createHash } from "node:crypto";
 import fs from "node:fs";
@@ -71,9 +71,11 @@ export function makeGuard(cfg) {
     const n = norm(p);
     return roots.some(r => within(n, r)) && !deny.some(d => within(n, d)) && !n.split(path.sep).some(deniedName);
   };
-  // realpath follows junctions/symlinks, so a link inside a root can't point outside it.
+  // Lexical check first, so UNC/device paths never reach the filesystem (no SMB connection, no NTLM hash leak);
+  // then realpath follows junctions/symlinks, so a link inside a root can't point outside it.
   const check = p => {
     if (typeof p !== "string" || !p) throw new Error("path is required");
+    if (!/^[A-Za-z]:[\\/]/.test(p) || !allowed(path.resolve(p))) throw new Error(`not allowed: ${p}`);
     let abs;
     try { abs = fs.realpathSync.native(path.resolve(p)); } catch { throw new Error(`not found: ${p}`); }
     if (!allowed(abs)) throw new Error(`not allowed: ${p}`);
@@ -228,14 +230,14 @@ function buildServer(ctx) {
 
 // ---- single-user OAuth ----
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
-function sendLogin(res, status, id, clientName, error = "") {
+function sendLogin(res, status, id, redirectHost, error = "") {
   res.status(status).set({ "X-Frame-Options": "DENY", "Content-Security-Policy": "frame-ancestors 'none'", "Cache-Control": "no-store" })
     .type("html").send(`<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Danny's PC sign-in</title>
 <style>body{font:16px system-ui,sans-serif;max-width:24rem;margin:12vh auto;padding:0 16px;background:#fff;color:#111}
 input,button{font:inherit;width:100%;padding:.6rem;margin:.4rem 0;box-sizing:border-box}.err{color:#b00020}
 @media (prefers-color-scheme:dark){body{background:#111;color:#eee}.err{color:#ff8a80}}</style>
-<h1>Danny's PC</h1><p>${esc(clientName || "Claude")} is asking for the TV, finance and file tools.</p>
+<h1>Danny's PC</h1><p>Access to the TV, finance and file tools will be given to <strong>${esc(redirectHost)}</strong>.</p>
 ${error ? `<p class="err" role="alert">${esc(error)}</p>` : ""}
 <form method="post" action="/login"><input type="hidden" name="id" value="${esc(id)}">
 <label for="p">Passphrase</label><input id="p" name="passphrase" type="password" autocomplete="current-password" required autofocus>
@@ -252,6 +254,10 @@ export function makeAuth(cfg) {
     fs.writeFileSync(cfg.stateFile, JSON.stringify(state));
   };
   const pending = new Map(), codes = new Map();
+  // Only Claude's callbacks may receive codes, so a self-registered client can't phish the passphrase.
+  const origins = cfg.redirectOrigins || ["https://claude.ai", "https://claude.com"];
+  const okRedirect = u => { try { return origins.includes(new URL(u).origin); } catch { return false; } };
+  const host = u => new URL(u).host;
   // Tokens are stored only as hashes.
   const issue = clientId => {
     const access = randomBytes(32).toString("base64url"), refresh = randomBytes(32).toString("base64url");
@@ -269,12 +275,16 @@ export function makeAuth(cfg) {
   const provider = {
     clientsStore: {
       getClient: id => state.clients[id],
-      registerClient: c => { state.clients[c.client_id] = c; save(); return c; },
+      registerClient: c => {
+        if (!c.redirect_uris?.length || !c.redirect_uris.every(okRedirect)) throw new InvalidClientMetadataError("redirect_uri not allowed");
+        state.clients[c.client_id] = c; save(); return c;
+      },
     },
     async authorize(client, params, res) {
+      if (!okRedirect(params.redirectUri)) return res.status(400).type("text").send("redirect_uri not allowed");
       const id = randomBytes(16).toString("hex");
       pending.set(id, { clientId: client.client_id, params, exp: now() + LOGIN_TTL, tries: 0 });
-      sendLogin(res, 200, id, client.client_name);
+      sendLogin(res, 200, id, host(params.redirectUri));
     },
     async challengeForAuthorizationCode(client, code) { return liveCode(client, code).params.codeChallenge; },
     async exchangeAuthorizationCode(client, code, _verifier, redirectUri) {
@@ -313,7 +323,7 @@ export function makeAuth(cfg) {
         pending.delete(id);
         return res.status(403).type("text").send("Too many attempts. Start again from Claude.");
       }
-      return sendLogin(res, 401, id, state.clients[p.clientId]?.client_name, "Wrong passphrase.");
+      return sendLogin(res, 401, id, host(p.params.redirectUri), "Wrong passphrase.");
     }
     pending.delete(id);
     const code = randomBytes(32).toString("base64url");

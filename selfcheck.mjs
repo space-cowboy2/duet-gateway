@@ -26,6 +26,7 @@ const cfg = {
   port, publicUrl: `http://127.0.0.1:${port}`, passphraseHash: hashPassphrase(PASS),
   roots: [root], deny: [path.join(root, "blocked")], denyNames: [".env", "*.key"],
   commands: { hi: "Write-Output hi" }, upstreams: [], stateFile: path.join(tmp, "state.json"),
+  redirectOrigins: ["http://127.0.0.1:1"],
 };
 setLogFile(path.join(tmp, "gateway.log"));
 let server;
@@ -39,7 +40,8 @@ try {
   const g = makeGuard(cfg);
   assert.ok(g.check(path.join(root, "sub", "hello.txt")));
   for (const bad of [path.join(root, "..", "outside", "secret.txt"), path.join(root, "jump", "secret.txt"), path.join(root, ".env"),
-    path.join(root, "blocked", "x.txt"), "C:\\Windows\\win.ini", "Z:\\", ""]) assert.throws(() => g.check(bad), undefined, `allowed: ${bad}`);
+    path.join(root, "blocked", "x.txt"), "C:\\Windows\\win.ini", "Z:\\", "", "sub\\hello.txt",
+    "\\\\127.0.0.1\\c$\\x", "//127.0.0.1/c$/x", "\\\\?\\" + path.join(root, "sub", "hello.txt")]) assert.throws(() => g.check(bad), /not allowed|required/, `allowed: ${bad}`);
 
   // tools
   const ctx = makeContext(cfg);
@@ -78,6 +80,8 @@ try {
     JSON.stringify({ redirect_uris: [redirect], client_name: "selfcheck", token_endpoint_auth_method: "none" }),
     { "content-type": "application/json" })).json();
   assert.ok(client.client_id, JSON.stringify(client));
+  assert.equal((await post(meta.registration_endpoint, JSON.stringify({ redirect_uris: ["https://evil.example/cb"], token_endpoint_auth_method: "none" }),
+    { "content-type": "application/json" })).status, 400, "foreign redirect_uri registered");
 
   const startLogin = async () => {
     const verifier = randomBytes(32).toString("base64url");

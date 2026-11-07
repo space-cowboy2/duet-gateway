@@ -60,6 +60,17 @@ Canary checks after setup (ask Duet):
 2. "Start a session in duet and create hello.txt": `D:\Duet\hello.txt` appears.
 3. "Start an Egnyte session in read mode and list the top folders": claude.ai asks you to approve first.
 
+## Pull request review
+Every PR into `main` runs `.github/workflows/pr-review.yml`:
+- **Tests**: `npm run check` on a Windows runner.
+- **Claude review**: Claude reviews the diff against [REVIEW.md](REVIEW.md) and leaves inline comments. A blocking finding posts "Changes requested" and fails the check; once a later push passes, that review is dismissed. Draft PRs are skipped until they are marked ready.
+
+One-time setup on GitHub:
+1. Settings → Secrets and variables → Actions → add `CLAUDE_CODE_OAUTH_TOKEN` (run `claude setup-token`; uses your Claude plan) or `ANTHROPIC_API_KEY`.
+2. Settings → Rules → Rulesets (or Branches) → protect `main`: require a pull request, and require the status checks **Tests** and **Claude review**.
+
+To change the bar, edit `REVIEW.md`.
+
 ## Not in git (per machine)
 `config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `duet.OFF`.
 

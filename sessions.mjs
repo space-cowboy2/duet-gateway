@@ -13,17 +13,27 @@ const MAX_WAIT = 45, LOST_AFTER = 30, KEEP_ENDED_DAYS = 7, MAX_REPLIES = 50;
 const now = () => Math.floor(Date.now() / 1000);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Egnyte sessions: keep work data on the PC and keep Danny's secrets out.
-const SECRET_RULES = ["~/.ssh/**", "~/.claude/.credentials*", "~/.claude.json", "~/plaid-bridge/**", "~/duet-gateway/**",
-  "~/.config/**", "~/AppData/**", "**/.env*"].flatMap(p => [`Read(${p})`, `Edit(${p})`, `Write(${p})`]);
+// Egnyte sessions run as Danny, so they get no shell (a shell would get past every file rule below) and
+// file access only inside the Egnyte root. dontAsk denies anything not allowed here.
 const NO_OUTSIDE = ["WebFetch", "WebSearch", "SendMessage", "PushNotification", "RemoteTrigger", "CronCreate", "ScheduleWakeup"];
-const READ_ONLY_DENIED = ["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "Agent", "Task", "Workflow", "Skill", ...NO_OUTSIDE];
+const NO_SHELL = ["Bash", "PowerShell", "Agent", "Task", "Workflow", "Skill", ...NO_OUTSIDE];
 
-export function egnyteFlags(mode) {
-  return mode === "edit"
-    ? ["--permission-mode", "auto", "--strict-mcp-config", "--disallowedTools", ...NO_OUTSIDE, ...SECRET_RULES]
-    : ["--permission-mode", "dontAsk", "--strict-mcp-config", "--allowedTools", "Read", "Glob", "Grep",
-      "--disallowedTools", ...READ_ONLY_DENIED, ...SECRET_RULES];
+// Claude Code matches Windows paths in POSIX form: Z:\Shared -> //z/Shared/**
+export function pathRule(root) {
+  const m = /^([A-Za-z]):[\\/]?(.*)$/.exec(root);
+  const p = (m ? `/${m[1].toLowerCase()}/${m[2]}` : root).replace(/\\/g, "/").replace(/\/+$/, "");
+  return `/${p}/**`;
+}
+
+export function egnyteFlags(mode, root = "Z:\\") {
+  const inside = pathRule(root);
+  const drive = /^([A-Za-z]):/.exec(root)?.[1].toLowerCase();
+  // Deny rules beat allow rules from any settings file, including Danny's own ~/.claude/settings.json.
+  const outside = ["~/**", "**/.env*", ...(drive ? [..."abcdefghijklmnopqrstuvwxyz"].filter(d => d !== drive).map(d => `//${d}/**`) : [])];
+  const fileDeny = outside.flatMap(p => [`Read(${p})`, `Edit(${p})`]);
+  const allow = mode === "edit" ? [`Read(${inside})`, `Edit(${inside})`, "Glob", "Grep"] : [`Read(${inside})`, "Glob", "Grep"];
+  const deny = mode === "edit" ? NO_SHELL : [...NO_SHELL, "Edit", "Write", "NotebookEdit"];
+  return ["--permission-mode", "dontAsk", "--strict-mcp-config", "--allowedTools", ...allow, "--disallowedTools", ...deny, ...fileDeny];
 }
 
 export function makeSessions(cfg, log) {
@@ -33,6 +43,9 @@ export function makeSessions(cfg, log) {
   const workspaces = cc.workspaces || {};
   const timeoutSecs = cc.turnTimeoutSecs || 3600;
   const maxLocal = cc.maxParallel || 2;
+  const egnyteRoot = cc.egnyteRoot || "Z:\\";
+  // Egnyte tools are opt-in on the PC, so they only exist once Danny has set them to "Needs approval" in claude.ai.
+  const egnyteOn = cc.egnyteEnabled === true;
   let runnerSeen = 0;
 
   let db;
@@ -92,15 +105,19 @@ export function makeSessions(cfg, log) {
     while (localRunning.size < maxLocal && localQueue.length) {
       const s = db.sessions[localQueue.shift()];
       if (!s || s.status !== "queued-local") continue;
-      if (!fs.existsSync(cc.egnyteRoot || "Z:\\")) {
-        finish(s, s.turnId, { ok: false, text: `The Egnyte drive (${cc.egnyteRoot || "Z:\\"}) is not mounted. Danny needs to be signed in to the PC desktop with Egnyte running.` });
+      if (!egnyteOn) {
+        finish(s, s.turnId, { ok: false, text: "Egnyte sessions are switched off on the PC (egnyteEnabled in config.json)." });
+        continue;
+      }
+      if (!fs.existsSync(egnyteRoot)) {
+        finish(s, s.turnId, { ok: false, text: `The Egnyte drive (${egnyteRoot}) is not mounted. Danny needs to be signed in to the PC desktop with Egnyte running.` });
         continue;
       }
       const turnId = s.turnId;
       s.status = "running";
       save();
       localRunning.set(s.id, null);
-      runTurn({ claude: cc, claudeId: s.claudeId, prompt: s.prompt, cwd: cc.egnyteRoot || "Z:\\", flags: egnyteFlags(s.mode), timeoutSecs,
+      runTurn({ claude: cc, claudeId: s.claudeId, prompt: s.prompt, cwd: egnyteRoot, flags: egnyteFlags(s.mode, egnyteRoot), timeoutSecs,
         onSpawn: child => localRunning.set(s.id, child) })
         .then(r => finish(db.sessions[s.id], turnId, r))
         .finally(() => { localRunning.delete(s.id); pumpLocal(); });
@@ -153,7 +170,7 @@ export function makeSessions(cfg, log) {
   const unread = s => s.replies.filter(r => r.n > s.read);
   const view = s => ({
     session_id: s.id, name: s.name, kind: s.kind === "egnyte" ? `egnyte (${s.mode})` : "normal",
-    workspace: s.kind === "egnyte" ? cc.egnyteRoot || "Z:\\" : s.workspace,
+    workspace: s.kind === "egnyte" ? egnyteRoot : s.workspace,
     status: s.status.replace("-local", ""), turns: s.turns, unread: unread(s).length,
   });
   const take = s => {
@@ -282,6 +299,7 @@ export function makeSessions(cfg, log) {
       },
     },
   };
+  if (!egnyteOn) { delete tools.start_egnyte_session; delete tools.send_egnyte_message; }
   for (const t of Object.values(tools)) {
     const run = t.run;
     t.run = async a => JSON.stringify(await run(a || {}), null, 2);

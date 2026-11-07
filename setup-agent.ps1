@@ -3,20 +3,26 @@
 # runner.mjs as that user at every boot. Run it from an elevated PowerShell in the duet-gateway folder:
 #   powershell -ExecutionPolicy Bypass -File .\setup-agent.ps1
 # Run it again to update the runner or Claude Code.
-# Anything inside a workspace that runs as you (like the TV plugin) belongs in -Protect. Add -NewClaudeToken to replace the sign-in token,
-# or -Uninstall to remove the user, the task and the folder.
+# Workspaces are where duet-agent may write. Keep your own repos out of them: git hooks, .git/config, .vscode and
+# .claude settings in a repo all run as you the next time you or your editor open it.
+# -Protect folders are ones duet-agent may read but never change (your repos, code the gateway runs as you).
+# Add -NewClaudeToken to replace the sign-in token, or -Uninstall to remove the user, the task and the folder.
 [CmdletBinding()]
 param(
   [string]$UserName = "duet-agent",
-  [string[]]$Workspaces = @("D:\Projects", "D:\Duet"),
-  # Code that runs as you (the gateway's upstream servers). duet-agent may read it but never change it.
-  [string[]]$Protect = @("D:\Projects\tv-remote-plugin"),
+  [string[]]$Workspaces = @("D:\Duet"),
+  # An explicit deny, so it also beats drive-wide grants (D:\ often lets every signed-in user modify new folders).
+  [string[]]$Protect = @("D:\Projects"),
   [string]$ClaudeExe = "$env:USERPROFILE\.local\bin\claude.exe",
   [switch]$NewClaudeToken,
   [switch]$Uninstall
 )
 $ErrorActionPreference = "Stop"
 $Workspaces = $Workspaces | ForEach-Object { $_.TrimEnd("\") }
+$Protect = $Protect | ForEach-Object { $_.TrimEnd("\") }
+foreach ($w in $Workspaces) { foreach ($p in $Protect) {
+  if ($w -eq $p -or $w.StartsWith("$p\", [StringComparison]::OrdinalIgnoreCase)) { throw "Workspace $w is inside protected folder $p." }
+} }
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw "Run this from an elevated PowerShell (right-click PowerShell > Run as administrator)." }
 
@@ -108,6 +114,8 @@ if (-not $ws) { throw "No workspace folders." }
 foreach ($p in $Protect) {
   if (-not (Test-Path $p)) { continue }
   Step "Blocking $UserName from changing $p (it runs as you)"
+  # Drop the modify grant older versions of this script gave (D:\Projects used to be a workspace), then deny writes.
+  icacls $p /remove:g $UserName /Q | Out-Null
   icacls $p /deny "${UserName}:(OI)(CI)(W,D,DC)" /Q | Out-Null
 }
 

@@ -19,7 +19,7 @@ import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { makeSessions } from "./sessions.mjs";
 
-const VERSION = "1.1.0";
+const VERSION = "1.2.0";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAX_READ = 1 << 20, MAX_OUT = 60_000, MAX_LIST = 500;
 const ACCESS_TTL = 3600, REFRESH_TTL = 30 * 86400, CODE_TTL = 300, LOGIN_TTL = 600, MAX_TRIES = 5;

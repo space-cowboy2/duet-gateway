@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { makeContext, setLogFile } from "./gateway.mjs";
 import { startRunner } from "./runner.mjs";
+import { egnyteFlags, pathRule } from "./sessions.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-sess-"));
 const egnyte = path.join(tmp, "egnyte"), ws = path.join(tmp, "ws"), other = path.join(tmp, "other");
@@ -38,7 +39,7 @@ const runnerPort = await freePort();
 const claude = { command: process.execPath, args: [fake] };
 const cfg = {
   roots: [tmp], deny: [], denyNames: [], commands: {}, upstreams: [], stateFile: path.join(tmp, "state.json"),
-  claude: { ...claude, runnerToken: TOKEN, runnerPort, egnyteRoot: egnyte, workspaces: { projects: ws, other }, turnTimeoutSecs: 20 },
+  claude: { ...claude, runnerToken: TOKEN, runnerPort, egnyteRoot: egnyte, egnyteEnabled: true, workspaces: { projects: ws, other }, turnTimeoutSecs: 20 },
 };
 setLogFile(path.join(tmp, "gateway.log"));
 const call = async (ctx, name, args) => {
@@ -60,7 +61,7 @@ try {
   assert.equal(r.replies.length, 1, JSON.stringify(r));
   const t = r.replies[0].text;
   assert.match(t, /^new \| mode=dontAsk/);
-  assert.match(t, /allowed=Read,Glob,Grep/);
+  assert.ok(t.includes(`allowed=Read(/${egnyte}/**),Glob,Grep |`), t);
   assert.match(t, /bash_denied=true/);
   assert.match(t, /rules=true/);
   assert.ok(t.includes("cwd=" + fs.realpathSync(egnyte)) || t.includes("cwd=" + egnyte), t);
@@ -72,8 +73,9 @@ try {
 
   // Egnyte, edit mode
   r = await call(ctx, "start_egnyte_session", { prompt: "fix the typo", mode: "edit", wait_seconds: 10 });
-  assert.match(r.replies[0].text, /mode=auto/);
-  assert.match(r.replies[0].text, /bash_denied=false/);
+  assert.match(r.replies[0].text, /mode=dontAsk/);
+  assert.ok(r.replies[0].text.includes(`allowed=Read(/${egnyte}/**),Edit(/${egnyte}/**),Glob,Grep |`), r.replies[0].text);
+  assert.match(r.replies[0].text, /bash_denied=true/);
   await assert.rejects(call(ctx, "start_egnyte_session", { prompt: "x", mode: "admin" }), /mode/);
 
   // Normal session: refused before the runner port is known to have a token
@@ -136,6 +138,26 @@ try {
   r = await call(makeContext(cfg2), "start_egnyte_session", { prompt: "x", mode: "read", wait_seconds: 5 });
   assert.equal(r.replies[0].ok, false);
   assert.match(r.replies[0].text, /not mounted/);
+
+  // Egnyte tools are opt-in on the PC
+  const cfg3 = { ...cfg, stateFile: path.join(tmp, "c", "state.json"), claude: { ...cfg.claude, egnyteEnabled: undefined } };
+  fs.mkdirSync(path.dirname(cfg3.stateFile));
+  const off3 = (await makeContext(cfg3).listTools()).map(t => t.name);
+  assert.ok(!off3.includes("start_egnyte_session") && !off3.includes("send_egnyte_message") && off3.includes("start_session"), off3.join());
+
+  // Egnyte flags on Windows: no shell, files only inside the Egnyte root, every other drive and the profile denied
+  assert.equal(pathRule("Z:\\"), "//z/**");
+  assert.equal(pathRule("Z:\\Shared\\Team\\"), "//z/Shared/Team/**");
+  for (const mode of ["read", "edit"]) {
+    const f = egnyteFlags(mode, "Z:\\");
+    const allowed = f.slice(f.indexOf("--allowedTools") + 1, f.indexOf("--disallowedTools")), denied = f.slice(f.indexOf("--disallowedTools") + 1);
+    assert.equal(f[f.indexOf("--permission-mode") + 1], "dontAsk");
+    assert.deepEqual(allowed, mode === "edit" ? ["Read(//z/**)", "Edit(//z/**)", "Glob", "Grep"] : ["Read(//z/**)", "Glob", "Grep"]);
+    for (const d of ["Bash", "PowerShell", "WebFetch", "Agent", "Read(//c/**)", "Edit(//c/**)", "Read(//d/**)", "Read(~/**)", "Edit(~/**)", "Read(**/.env*)"])
+      assert.ok(denied.includes(d), `${mode} denies ${d}`);
+    assert.ok(!denied.some(d => d.includes("//z/")), "Z: is not denied");
+    assert.equal(denied.includes("Edit"), mode === "read");
+  }
 
   // Sessions survive a restart
   list = await call(makeContext(cfg), "list_sessions", {});

@@ -61,7 +61,7 @@ try {
   assert.equal(r.replies.length, 1, JSON.stringify(r));
   const t = r.replies[0].text;
   assert.match(t, /^new \| mode=dontAsk/);
-  assert.ok(t.includes(`allowed=Read(/${egnyte}/**),Glob,Grep |`), t);
+  assert.ok(t.includes(`allowed=Read(${pathRule(egnyte)}),Glob,Grep |`), t);
   assert.match(t, /bash_denied=true/);
   assert.match(t, /rules=true/);
   assert.ok(t.includes("cwd=" + fs.realpathSync(egnyte)) || t.includes("cwd=" + egnyte), t);
@@ -74,7 +74,7 @@ try {
   // Egnyte, edit mode
   r = await call(ctx, "start_egnyte_session", { prompt: "fix the typo", mode: "edit", wait_seconds: 10 });
   assert.match(r.replies[0].text, /mode=dontAsk/);
-  assert.ok(r.replies[0].text.includes(`allowed=Read(/${egnyte}/**),Edit(/${egnyte}/**),Glob,Grep |`), r.replies[0].text);
+  assert.ok(r.replies[0].text.includes(`allowed=Read(${pathRule(egnyte)}),Edit(${pathRule(egnyte)}),Glob,Grep |`), r.replies[0].text);
   assert.match(r.replies[0].text, /bash_denied=true/);
   await assert.rejects(call(ctx, "start_egnyte_session", { prompt: "x", mode: "admin" }), /mode/);
 

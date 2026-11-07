@@ -65,7 +65,7 @@ export function startRunner(cfg) {
   }
 
   const done = (async () => {
-    log(`runner ${instance.slice(0, 8)} started (up to ${cfg.maxParallel || 2} at a time)`);
+    log(`runner started (instance ${instance.slice(0, 8)}, up to ${cfg.maxParallel || 2} at a time)`);
     while (!stopped) {
       try {
         const free = (cfg.maxParallel || 2) - running.size;

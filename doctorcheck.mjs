@@ -6,7 +6,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { diagnose, format, realProbe, runDoctor } from "./doctor.mjs";
+import { diagnose, format, ownerArgs, realProbe, runDoctor } from "./doctor.mjs";
 
 const B = path.resolve("/fake"), P = (...a) => path.join(B, ...a);
 const HASH = "scrypt$" + "ab".repeat(16) + "$" + "cd".repeat(32), TOKEN = "secret-runner-token-123";
@@ -177,7 +177,14 @@ const run = async (probe, opts = {}) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-doctor-"));
   const git = path.join(tmp, "repo", ".git");
   fs.mkdirSync(git, { recursive: true });
-  assert.deepEqual(await real.mine([git]), [git], "a .git this process created should count as the current user's");
+  const got = await real.mine([git]);
+  if (process.platform === "win32" && !got?.length) {
+    // Show why PowerShell's owner check failed.
+    const ps = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const r = spawnSync(ps, ownerArgs(), { encoding: "utf8", env: { ...process.env, DOCTOR_PATHS: git } });
+    console.error("owner check:", r.status, JSON.stringify(r.stdout), JSON.stringify(r.stderr), r.error?.message);
+  }
+  assert.deepEqual(got, [git], "a .git this process created should count as the current user's");
   assert.deepEqual(await real.mine([path.join(tmp, "missing")]), []);
   fs.writeFileSync(path.join(tmp, "log"), "x".repeat(10_000) + "\nlast line\n");
   assert.equal(real.tail(path.join(tmp, "log"), 64).trim().split("\n").at(-1), "last line");

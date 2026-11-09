@@ -34,7 +34,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params: { name, argumen
     return { content: [{ type: "text", text: w === "garbage" ? "not json Re: payroll" : JSON.stringify({ ok: true, data: w }) }] };
   }
   if (name === "desktop_screenshot") {
-    if (process.env.FAKE_OPEN_ON_SHOT) fs.writeFileSync(W, JSON.stringify([{ app_name: "OUTLOOK.EXE", title: "x" }]));
+    if (process.env.FAKE_ON_SHOT) fs.writeFileSync(W, process.env.FAKE_ON_SHOT); // what the desktop looks like after the shot
     if (a?.boom) throw new Error("boom Re: payroll"); // a protocol error, so the client's callTool rejects
     return { content: [{ type: "image", mimeType: "image/png", data: "iVBO" }] };
   }
@@ -51,12 +51,16 @@ const calls = name => (fs.existsSync(callsFile) ? fs.readFileSync(callsFile, "ut
 
 const names = ["desktop_screenshot", "desktop_list_windows"];
 const pc = { prefix: "pc", command: process.execPath, args: [fakePath], allow: names, readOnly: names,
-  screenGuard: { offFile: "desktop.OFF", apps: ["OUTLOOK.EXE"], titles: ["\\bVista\\b"] } };
+  screenGuard: { offFile: "desktop.OFF", apps: ["OUTLOOK.EXE", "ms-teams.exe"], titles: ["\\bVista\\b"] } };
 const ctxs = [];
-const newCtx = async spec => { // the child gets process.env as it is at spawn, so FAKE_OPEN_ON_SHOT is set only around it
+// The test machine has work apps running, so the process list is always stubbed (a clean one by default).
+const newCtx = async (spec, onShot) => { // the child gets process.env as it is at spawn, so FAKE_ON_SHOT is set only around it
   const ctx = makeContext({ ...baseCfg, upstreams: [spec] });
   ctxs.push(ctx);
+  ctx.ups[0].processes = async () => ["node.exe"];
+  if (onShot) process.env.FAKE_ON_SHOT = onShot;
   await ctx.ups[0].get();
+  delete process.env.FAKE_ON_SHOT;
   return ctx;
 };
 try {
@@ -80,6 +84,16 @@ try {
   for (const t of ["Viewpoint Vista", "Inbox - Outlook", "Egnyte Desktop App", "Citrix Workspace", "SharePoint - Home"])
     assert.equal(blockedApps([{ app_name: "msedge.exe", title: t }], compileGuard(ex.screenGuard)).length, 1, t);
   assert.deepEqual(blockedApps([{ app_name: "msedge.exe", title: "Vistaprint" }], compileGuard(ex.screenGuard)), []);
+
+  // agent-desktop must not start without an allowlist and a guard that has something to match
+  const ad = { prefix: "pc", command: "C:\\x\\agent-desktop-win32-x64.exe", allow: ["desktop_snapshot"], screenGuard: { apps: ["OUTLOOK.EXE"] } };
+  for (const bad of [{ allow: undefined }, { screenGuard: undefined }, { screenGuard: { offFile: "desktop.OFF" } }])
+    assert.throws(() => makeContext({ ...baseCfg, upstreams: [{ ...ad, ...bad }] }), /pc: agent-desktop needs allow and a screenGuard with apps or titles/);
+  assert.equal(makeContext({ ...baseCfg, upstreams: [ad, { prefix: "tv", command: "x" }] }).ups.length, 2);
+
+  // the real process list parses (names only, nothing is printed)
+  const real = await makeContext({ ...baseCfg, upstreams: [{ prefix: "tv", command: "x" }] }).ups[0].processes();
+  assert.ok(real.some(p => p.toLowerCase() === path.basename(process.execPath).toLowerCase()));
 
   // enabled: false drops the upstream
   assert.equal(makeContext({ ...baseCfg, upstreams: [{ prefix: "pc", enabled: false, command: "x" }] }).ups.length, 0);
@@ -117,11 +131,23 @@ try {
     assert.equal(calls("desktop_screenshot"), 0, "the screenshot was never taken");
   }
 
+  // a work app with no window (tray) is caught by the process list; names are the union, first spelling kept
+  setWindows([{ app_name: "OUTLOOK.EXE", title: "x" }]);
+  ctx.ups[0].processes = async () => ["node.exe", "outlook.exe", "Ms-Teams.exe"];
+  reset();
+  await refusal(shot(), /close these first: OUTLOOK\.EXE, Ms-Teams\.exe$/);
+  setWindows([{ app_name: "notepad.exe", title: "a" }]);
+  await refusal(shot(), /close these first: outlook\.exe, Ms-Teams\.exe$/);
+  assert.equal(calls("desktop_screenshot"), 0);
+  // a failing process listing fails closed
+  ctx.ups[0].processes = async () => { throw new Error("couldn't list processes"); };
+  await refusal(shot(), /couldn't check open windows \(couldn't list processes\)/);
+  assert.equal(calls("desktop_screenshot"), 0);
+  ctx.ups[0].processes = async () => ["node.exe"];
+
   // a work window opened during the call: the result is dropped
   setWindows([]);
-  process.env.FAKE_OPEN_ON_SHOT = "1";
-  const racy = await newCtx(pc);
-  delete process.env.FAKE_OPEN_ON_SHOT;
+  const racy = await newCtx(pc, JSON.stringify([{ app_name: "OUTLOOK.EXE", title: "x" }]));
   reset();
   await refusal(racy.callTool("pc_desktop_screenshot", {}), /opened during the call \(OUTLOOK\.EXE\).*dropped/);
   assert.equal(calls("desktop_screenshot"), 1);
@@ -130,6 +156,13 @@ try {
   reset();
   await refusal(racy.callTool("pc_desktop_screenshot", { boom: 1 }), /opened during the call \(OUTLOOK\.EXE\)/);
   assert.equal(calls("desktop_list_windows"), 2);
+
+  // the after-check fails closed too: a listing that errors after the call drops the result
+  setWindows([]);
+  const flaky = await newCtx(pc, JSON.stringify("error"));
+  reset();
+  await refusal(flaky.callTool("pc_desktop_screenshot", {}), /couldn't check open windows/);
+  assert.equal(calls("desktop_screenshot"), 1);
 
   // output_path is refused before anything reaches the fake server
   setWindows([]);
@@ -164,10 +197,11 @@ try {
   assert.equal(calls("desktop_list_windows"), 0);
   assert.equal(calls("desktop_screenshot"), 1);
 
-  // the log has the tool name and "refused", never titles; the guard's instructions appear only with a guarded upstream
+  // the log has the tool name and the refusal kind, never names or titles; the guard's instructions appear only with a guarded upstream
   const logged = fs.readFileSync(logFile, "utf8");
-  assert.match(logged, /tool pc_desktop_screenshot refused: work apps open/);
-  assert.doesNotMatch(logged, /payroll|Vista/);
+  for (const kind of ["work apps open", "window check failed", "desktop\\.OFF", "output_path"])
+    assert.match(logged, new RegExp(`tool pc_desktop_screenshot refused: ${kind} \\d+ms`), kind);
+  assert.doesNotMatch(logged, /payroll|Vista|OUTLOOK|Teams/i);
   assert.match(ctx.instructions(), /pc_desktop_\*/);
   assert.doesNotMatch(tv.instructions(), /pc_desktop_/);
 

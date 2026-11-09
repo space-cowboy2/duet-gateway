@@ -184,12 +184,21 @@ export function blockedApps(windows, guard) {
   return [...new Set(windows.filter(w => g.apps.has(String(w.app_name).toLowerCase()) || g.titles.some(re => re.test(w.title ?? ""))).map(w => w.app_name))];
 }
 
-const refused = msg => Object.assign(new Error(msg), { refused: true });
+// kind is a fixed label for gateway.log: never names or titles.
+const refused = (msg, kind) => Object.assign(new Error(msg), { refused: true, kind });
 
 class Upstream {
   constructor(spec, dir) {
     Object.assign(this, spec); this.dir = dir; this.client = null; this.connecting = null;
     this.guard = spec.screenGuard && compileGuard(spec.screenGuard);
+    // Fail closed at startup: agent-desktop without an allowlist or a guard would expose the whole desktop.
+    if (/agent-desktop/i.test(path.win32.basename(String(spec.command))) && !(Array.isArray(spec.allow) && (this.guard?.apps.size || this.guard?.titles.length)))
+      throw new Error(`upstream ${spec.prefix}: agent-desktop needs allow and a screenGuard with apps or titles`);
+  }
+  // Running process image names. Windowless work apps (Outlook or Teams in the tray) can still show toasts on a screenshot.
+  processes() {
+    return new Promise((resolve, reject) => execFile("tasklist", ["/fo", "csv", "/nh"], { timeout: 15_000, windowsHide: true, maxBuffer: 8 << 20 }, (err, out) =>
+      err ? reject(new Error("couldn't list processes")) : resolve(String(out).split(/\r?\n/).map(l => /^"([^"]*)"/.exec(l)?.[1]).filter(Boolean))));
   }
   get() {
     if (this.client) return Promise.resolve(this.client);
@@ -220,18 +229,21 @@ class Upstream {
     return data;
   }
   async #check(refusal) {
-    let bad;
-    try { bad = blockedApps(await this.#windows(), this.guard); }
-    catch (e) { throw refused(`refused: couldn't check open windows (${e.message})`); }
-    if (bad.length) throw refused(refusal(bad.join(", ")));
+    let wins, procs;
+    try { [wins, procs] = await Promise.all([this.#windows(), this.processes()]); }
+    catch (e) { throw refused(`refused: couldn't check open windows (${e.message})`, "window check failed"); }
+    // Windows first; a process already named by a window (any case) is not repeated.
+    const seen = new Set(), bad = [...blockedApps(wins, this.guard), ...procs.filter(p => this.guard.apps.has(p.toLowerCase()))]
+      .filter(n => !seen.has(n.toLowerCase()) && seen.add(n.toLowerCase()));
+    if (bad.length) throw refused(refusal(bad.join(", ")), "work apps open");
   }
   async call(name, args) {
     if (this.allow && !this.allow.includes(name)) throw new Error(`not allowed: ${this.prefix}_${name}`);
     // TV macros take ~25 s and long sequences more; the SDK default is 60 s.
     const run = async () => (await this.get()).callTool({ name, arguments: args }, undefined, { timeout: 200_000 });
     if (!this.guard) return run();
-    if (fs.existsSync(path.join(this.dir, this.guard.offFile || "desktop.OFF"))) throw refused("desktop control is off (desktop.OFF on the PC). Danny has to delete that file to turn it back on.");
-    if (Object.hasOwn(args, "output_path")) throw refused("output_path is not allowed: screenshots are returned, never saved on the PC.");
+    if (fs.existsSync(path.join(this.dir, this.guard.offFile || "desktop.OFF"))) throw refused("desktop control is off (desktop.OFF on the PC). Danny has to delete that file to turn it back on.", "desktop.OFF");
+    if (Object.hasOwn(args, "output_path")) throw refused("output_path is not allowed: screenshots are returned, never saved on the PC.", "output_path");
     await this.#check(n => `refused: work apps are open on the PC. Ask Danny to close these first: ${n}`);
     // Even a failed or thrown call is checked, and a refusal here wins over its result or error text.
     const after = () => this.#check(n => `refused: a work app opened during the call (${n}), so the result was dropped.`);
@@ -277,8 +289,8 @@ export function makeContext(cfg) {
         if (!res.isError) outcome = "ok";
         return res;
       } catch (e) {
-        // A guard refusal is logged without names or titles.
-        if (e?.refused) outcome = "refused: work apps open";
+        // A guard refusal is logged by its fixed kind, without names or titles.
+        if (e?.refused) outcome = `refused: ${e.kind}`;
         return { content: [{ type: "text", text: String(e?.message || e) }], isError: true };
       } finally {
         log(`tool ${name} ${outcome} ${Date.now() - t0}ms`);

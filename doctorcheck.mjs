@@ -156,6 +156,23 @@ const run = async (probe, opts = {}) => {
   assert.equal(by("claude").level, "warn");
 }
 
+// 5b. Desktop control: the `pc` upstream.
+{
+  const EXE = P("bin", "agent-desktop.exe"), same = (a, b) => path.resolve(a) === path.resolve(b);
+  const pcRun = (pc, { exe = true, off = false } = {}) => {
+    const p = healthy(pc && { upstreams: [pc] }), has = p.exists;
+    p.exists = x => (exe && same(x, EXE)) || (off && same(x, P("gw", "desktop.OFF"))) || has(x);
+    return run(p);
+  };
+  const pc = { prefix: "pc", enabled: true, command: EXE, args: ["mcp"] };
+  let by;
+  ({ by } = await pcRun(undefined)); assert.deepEqual([by("desktop control").level, by("desktop control").detail], ["ok", "off"]);
+  ({ by } = await pcRun({ ...pc, enabled: false })); assert.deepEqual([by("desktop control").level, by("desktop control").detail], ["ok", "off"]);
+  ({ by } = await pcRun(pc, { exe: false })); assert.equal(by("desktop control").level, "fail"); assert.match(by("desktop control").detail, /agent-desktop not found at .*agent-desktop.exe/);
+  ({ by } = await pcRun(pc, { off: true })); assert.equal(by("desktop control").level, "warn"); assert.match(by("desktop control").detail, /desktop.OFF/);
+  ({ by } = await pcRun(pc)); assert.equal(by("desktop control").level, "ok"); assert.match(by("desktop control").detail, /Needs approval/);
+}
+
 // 6. Exit code.
 {
   const lines = [];

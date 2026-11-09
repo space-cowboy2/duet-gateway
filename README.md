@@ -3,6 +3,7 @@
 Remote MCP gateway that lets Claude (claude.ai connectors, Duet) reach tools on a home PC:
 - `tv_*`: proxied from the TV remote MCP server
 - `money_*`: a read-only allowlist proxied from the Plaid bridge
+- `pc_desktop_*`: see and drive this PC's desktop (screenshots, clicks, typing, opening apps) through agent-desktop. Off until you set `enabled`, and refused while a work app is open
 - `files_list`, `files_read`, `files_search`: read-only, limited to the folders in `roots`
 - `run_command`: only the named commands listed in `commands`, which is empty by default
 - `start_session`, `send_message`, `read_messages`, `list_sessions`, `end_session`: Claude Code sessions with full autonomy, run as a separate Windows user that cannot see Egnyte or your profile
@@ -75,6 +76,38 @@ git fetch D:/Duet/work.bundle main:duet/work
 git diff main duet/work
 ```
 
+## Desktop control
+`pc_desktop_*` lets Duet see and drive this PC's desktop: screenshots, accessibility snapshots, clicks, typing, opening and arranging apps. The gateway runs [agent-desktop](https://www.npmjs.com/package/agent-desktop) as a child (the `pc` upstream in `config.example.json`, 44 tools), in your desktop logon, so it sees your real screen. Anything it reads goes to Anthropic, so work apps must stay closed: see the guard below.
+
+**Turn it on**
+1. In `config.json`, copy the `pc` upstream from `config.example.json` and set `"enabled": true`. Check `command` points at `agent-desktop-win32-x64.exe` on this machine.
+2. Restart the gateway. Until then the tools don't exist.
+3. In claude.ai, open the connector's tool settings and set the act tools to **Needs approval**. They are marked as write tools, so they group together. The read tools (`snapshot`, `screenshot`, `find`, `get`, `is`, `wait`, `list_*`, `status`, `version`, `skills_*`) can stay on Always allow.
+4. `npm run doctor` shows a `desktop control` line: `ok` on, `warn` if `desktop.OFF` exists, `fail` if the exe is missing.
+
+**Work-app guard.** Before and after every `pc_desktop_*` call the gateway lists the open windows (minimized ones too). It refuses the call if any window belongs to `OUTLOOK.EXE`, `wfica32.exe`, `CDViewer.exe`, `SelfService.exe`, `ms-teams.exe`, `Teams.exe`, `EgnyteClient.exe` or `EgnyteDrive.exe` (Outlook, Citrix, Teams, Egnyte), or has a title matching Outlook, Egnyte, Viewpoint, Vista, Citrix, Primoris, Teams or SharePoint (case-insensitive). The patterns are `screenGuard.titles` in config. The check after the call matters: if a work window appeared meanwhile (say `launch` opened one), the result is thrown away, so that screenshot never leaves. It also:
+- refuses any `output_path` argument, which would write a file anywhere as you;
+- refuses every call while `desktop.OFF` exists in this folder;
+- fails closed: if the window list errors or can't be read, the call is refused.
+
+The refusal names only the exe ("close these first: OUTLOOK.EXE"), never a window title, because titles can hold email subjects. `gateway.log` gets `tool pc_desktop_x refused: work apps open`. A bad regex in `titles` stops the gateway at startup instead of being skipped.
+
+**Tools left out**
+- `clipboard_get/set/clear`: the clipboard can hold something copied from Vista, and the guard can't see it.
+- `list_notifications`, `notification_action`, `dismiss_*`: Outlook and Teams toasts show message text.
+- `batch`: its sub-commands would get around the allowlist.
+- `open_system_surface`, `permissions`: system settings.
+- `key_down/up`, `mouse_down/up`: a dropped call leaves a key or button stuck; `press`, `drag` and `mouse_click` cover the same needs.
+- `session_*`, `trace_*`, `skills_path`, `cursor_overlay_*`: housekeeping that writes local files or isn't needed.
+
+**Known limits**
+- The title guard sees only each window's current title. A work page in a browser *background tab* isn't caught, and File Explorer on `Z:\` shows just the folder name. Close or switch those first.
+- The approval tap is the real protection against a booby-trapped email steering Duet. The act tools include `launch` and `type`, so with approval Duet could open PowerShell and type into it as you. Read each card.
+- The check before and after a call is not atomic. A work window that opens *and closes* inside one call can be missed. That takes well under a second; acceptable.
+- Each guarded call adds two window listings (about 0.6 s each).
+
+**Kill switch:** create `desktop.OFF` in this folder. It takes effect on the next call, no restart. Delete it to turn desktop control back on.
+
 ## Pull request review
 Every PR into `main` runs `.github/workflows/pr-review.yml`:
 - **Tests**: `npm run check` on a Windows runner.
@@ -89,11 +122,11 @@ The review action refuses to run when a PR changes `pr-review.yml` itself (the f
 To change the bar, edit `REVIEW.md`. The reviewer always judges a PR by the `REVIEW.md` on `main`, so a PR can't lower the bar for itself.
 
 ## Not in git (per machine)
-`config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `duet.OFF`.
+`config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `duet.OFF`, `desktop.OFF`.
 
 ## Notes
-- Health check: `npm run doctor` (or `node gateway.mjs doctor`) prints one `ok`, `warn` or `fail` line per check and exits 1 on any `fail`. It checks config.json, the passphrase, `publicUrl`, `roots`, the `claude` section (command, runner token, workspaces that hold or sit inside your own repos), `egnyteEnabled`, the Egnyte drive, `duet.OFF`, both loopback ports, the `duet-agent-runner` task and the last `runner.log` line. It never prints secrets or file contents. Run it from an elevated prompt to also compare the runner token with `C:\ProgramData\duet-agent\runner-token`.
-- Kill switches: create `duet.OFF` in this folder to refuse new Claude Code turns; `tailscale funnel reset` closes the endpoint; `Stop-ScheduledTask duet-agent-runner` stops the runner.
+- Health check: `npm run doctor` (or `node gateway.mjs doctor`) prints one `ok`, `warn` or `fail` line per check and exits 1 on any `fail`. It checks config.json, the passphrase, `publicUrl`, `roots`, the `claude` section (command, runner token, workspaces that hold or sit inside your own repos), `egnyteEnabled`, the Egnyte drive, `duet.OFF`, desktop control (the `pc` upstream and `desktop.OFF`), both loopback ports, the `duet-agent-runner` task and the last `runner.log` line. It never prints secrets or file contents. Run it from an elevated prompt to also compare the runner token with `C:\ProgramData\duet-agent\runner-token`.
+- Kill switches: create `duet.OFF` in this folder to refuse new Claude Code turns; create `desktop.OFF` to refuse every `pc_desktop_*` call; `tailscale funnel reset` closes the endpoint; `Stop-ScheduledTask duet-agent-runner` stops the runner.
 - Anything Claude reads through these tools is sent to Anthropic's cloud. Keep work data (Z:\ Egnyte, Vista) out of `roots`; Egnyte is reachable only through the approval-gated Egnyte tools.
 - Normal and Egnyte sessions share your Claude plan's usage limits.
 - Unverified: whether Duet accepts custom connectors.

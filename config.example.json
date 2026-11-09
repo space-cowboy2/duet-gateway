@@ -54,7 +54,7 @@
     {
       "prefix": "pc",
       "enabled": false,
-      "command": "C:Users\trandAppDataRoaming\npm\node_modulesagent-desktop\binagent-desktop-win32-x64.exe",
+      "command": "C:\\Users\\trand\\AppData\\Roaming\\npm\\node_modules\\agent-desktop\\bin\\agent-desktop-win32-x64.exe",
       "args": [
         "mcp"
       ],
@@ -133,14 +133,14 @@
           "EgnyteDrive.exe"
         ],
         "titles": [
-          "\bOutlook\b",
-          "\bEgnyte\b",
-          "\bViewpoint\b",
-          "\bVista\b",
-          "\bCitrix\b",
-          "\bPrimoris\b",
-          "\bTeams\b",
-          "\bSharePoint\b"
+          "\\bOutlook\\b",
+          "\\bEgnyte\\b",
+          "\\bViewpoint\\b",
+          "\\bVista\\b",
+          "\\bCitrix\\b",
+          "\\bPrimoris\\b",
+          "\\bTeams\\b",
+          "\\bSharePoint\\b"
         ]
       }
     }

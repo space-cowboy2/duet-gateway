@@ -171,6 +171,8 @@ function localTools(cfg, guard) {
 // ---- upstream stdio servers ----
 export function compileGuard(g) {
   const titles = (g.titles || []).map(p => {
+    // "\b" written with one backslash in JSON arrives as a backspace and would silently never match (fail open).
+    if (/[\x00-\x1f]/.test(p)) throw new Error(`screenGuard: bad title pattern (control character; write \\\\b in JSON)`);
     try { return new RegExp(p, "i"); } catch { throw new Error(`screenGuard: bad title pattern ${p}`); }
   });
   return { offFile: g.offFile, apps: new Set((g.apps || []).map(a => a.toLowerCase())), titles };

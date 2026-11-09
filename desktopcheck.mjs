@@ -70,6 +70,15 @@ try {
   // a bad regex fails when the context is built, not on the first call
   assert.throws(() => compileGuard({ titles: ["("] }), /bad title pattern/);
   assert.throws(() => makeContext({ ...baseCfg, upstreams: [{ prefix: "pc", command: "x", screenGuard: { titles: ["("] } }] }), /bad title pattern/);
+  // a one-backslash "\b" in JSON is a backspace: refuse it instead of a pattern that never matches
+  assert.throws(() => compileGuard({ titles: ["\bVista\b"] }), /control character/);
+  // the shipped example's guard really catches work windows (escaping in config.example.json)
+  const ex = JSON.parse(fs.readFileSync(new URL("./config.example.json", import.meta.url), "utf8")).upstreams.find(u => u.prefix === "pc");
+  assert.equal(ex.enabled, false);
+  assert.equal(path.win32.basename(ex.command), "agent-desktop-win32-x64.exe");
+  for (const t of ["Viewpoint Vista", "Inbox - Outlook", "Egnyte Desktop App", "Citrix Workspace", "SharePoint - Home"])
+    assert.equal(blockedApps([{ app_name: "msedge.exe", title: t }], compileGuard(ex.screenGuard)).length, 1, t);
+  assert.deepEqual(blockedApps([{ app_name: "msedge.exe", title: "Vistaprint" }], compileGuard(ex.screenGuard)), []);
 
   // enabled: false drops the upstream
   assert.equal(makeContext({ ...baseCfg, upstreams: [{ prefix: "pc", enabled: false, command: "x" }] }).ups.length, 0);

@@ -3,7 +3,7 @@
 Remote MCP gateway that lets Claude (claude.ai connectors, Duet) reach tools on a home PC:
 - `tv_*`: proxied from the TV remote MCP server
 - `money_*`: a read-only allowlist proxied from the Plaid bridge
-- `pc_desktop_*`: see and drive this PC's desktop (screenshots, clicks, typing, opening apps) through agent-desktop. Off until you set `enabled`, and refused while a work app is open
+- `pc_desktop_*`: see and drive this PC's desktop (screenshots, clicks, typing, opening apps) through agent-desktop. Off until you set `enabled`
 - `files_list`, `files_read`, `files_search`: read-only, limited to the folders in `roots`
 - `run_command`: only the named commands listed in `commands`, which is empty by default
 - `start_session`, `send_message`, `read_messages`, `list_sessions`, `end_session`: Claude Code sessions with full autonomy, run as a separate Windows user that cannot see Egnyte or your profile
@@ -77,25 +77,22 @@ git diff main duet/work
 ```
 
 ## Desktop control
-`pc_desktop_*` lets Duet see and drive this PC's desktop: screenshots, accessibility snapshots, clicks, typing, opening and arranging apps. The gateway runs [agent-desktop](https://www.npmjs.com/package/agent-desktop) as a child (the `pc` upstream in `config.example.json`, 44 tools), in your desktop logon, so it sees your real screen. Anything it reads goes to Anthropic, so work apps must stay closed: see the guard below.
+`pc_desktop_*` lets Duet see and drive this PC's desktop: screenshots, accessibility snapshots, clicks, typing, opening and arranging apps. The gateway runs [agent-desktop](https://www.npmjs.com/package/agent-desktop) as a child (the `pc` upstream in `config.example.json`, 44 tools), in your desktop logon, so it sees your real screen. Anything it reads goes to Anthropic, including work apps (Outlook, Citrix/Vista, Excel, Teams, Egnyte) if they are open: there is no work-app guard. Close what you don't want it to see.
 
 **Turn it on**
 1. In `config.json`, copy the `pc` upstream from `config.example.json` and set `"enabled": true`. Check `command` points at `agent-desktop-win32-x64.exe` on this machine.
 2. Restart the gateway. Until then the tools don't exist.
 3. In claude.ai, open the connector's tool settings and set the act tools to **Needs approval**. They are marked as write tools, so they group together. The read tools (`snapshot`, `screenshot`, `find`, `get`, `is`, `wait`, `list_*`, `status`, `version`, `skills_*`) can stay on Always allow.
-4. `npm run doctor` shows a `desktop control` line: `ok` on, `warn` if `desktop.OFF` exists, `fail` if the exe is missing, the upstream has no `allow` list or `screenGuard`, or `allow` holds a clipboard, `batch` or notification tool.
+4. `npm run doctor` shows a `desktop control` line: `ok` on, `warn` if `desktop.OFF` exists, `fail` if the exe is missing, the upstream has no `allow` list or `offFile`, or `allow` holds a clipboard, `batch` or notification tool.
 
-**Work-app guard.** Before and after every `pc_desktop_*` call the gateway lists the open windows (minimized ones too) and the running processes, in parallel. It refuses the call if any window belongs to, or a process is running from, `OUTLOOK.EXE`, `olk.exe` (new Outlook), `wfica32.exe`, `CDViewer.exe`, `SelfService.exe`, `CitrixWorkspace.exe`, `Receiver.exe`, `mstsc.exe` (Citrix and remote desktop), `ms-teams.exe`, `Teams.exe`, `EgnyteClient.exe`, `EgnyteDrive.exe` or `EXCEL.EXE`, so Outlook or Teams sitting in the tray with no window still blocks. Excel is on the list because JCA data lives there and a workbook title like "JCA 1234.xlsx" matches no title pattern; desktop control is therefore refused whenever Excel is open (remove `EXCEL.EXE` from `apps` in your own config.json if you accept that). A window with a title matching Outlook, Egnyte, Viewpoint, Vista, Citrix, Primoris, Teams or SharePoint (case-insensitive). The patterns are `screenGuard.titles` in config. The check after the call matters: if a work window appeared meanwhile (say `launch` opened one), the result is thrown away, so that screenshot never leaves. It also:
-- refuses any `output_path` argument, which would write a file anywhere as you;
-- refuses every call while `desktop.OFF` exists in this folder;
-- fails closed: if the window or process list errors or can't be read, the call is refused.
+**Refusals.** The gateway refuses a `pc_desktop_*` call that:
+- has an `output_path` argument, which would write a file anywhere as you;
+- comes while `desktop.OFF` exists in this folder.
 
-An agent-desktop upstream without an `allow` list, or without a `screenGuard` that has apps or titles, makes the gateway refuse to start, so a copy of the example that loses either can't run unguarded with all 67 tools.
-
-The refusal names only the exe ("close these first: OUTLOOK.EXE"), never a window title, because titles can hold email subjects. `gateway.log` gets `tool pc_desktop_x refused: <kind>`, where kind is `work apps open`, `window check failed`, `desktop.OFF` or `output_path` (never names or titles). A bad regex in `titles` stops the gateway at startup instead of being skipped.
+An agent-desktop upstream without an `allow` list or an `offFile` makes the gateway refuse to start, so a copy of the example that loses either can't run with all 67 tools and no off switch. `gateway.log` gets `tool pc_desktop_x refused: <kind>`, where kind is `desktop.OFF` or `output_path`.
 
 **Tools left out**
-- `clipboard_get/set/clear`: the clipboard can hold something copied from Vista, and the guard can't see it.
+- `clipboard_get/set/clear`: the clipboard can hold something copied from Vista.
 - `list_notifications`, `notification_action`, `dismiss_*`: Outlook and Teams toasts show message text.
 - `batch`: its sub-commands would get around the allowlist.
 - `open_system_surface`, `permissions`: system settings.
@@ -103,12 +100,8 @@ The refusal names only the exe ("close these first: OUTLOOK.EXE"), never a windo
 - `session_*`, `trace_*`, `skills_path`, `cursor_overlay_*`: housekeeping that writes local files or isn't needed.
 
 **Known limits**
-- The title guard sees only each window's current title. A work page in a browser *background tab* isn't caught, and File Explorer on `Z:\` shows just the folder name. Close or switch those first.
-- Excel is caught only by exe name, so any open workbook blocks desktop control, work or not.
 - `desktop.OFF` is checked when a call starts; a call already running finishes.
 - The approval tap is the real protection against a booby-trapped email steering Duet. The act tools include `launch` and `type`, so with approval Duet could open PowerShell and type into it as you. Read each card.
-- The check before and after a call is not atomic. A work window that opens *and closes* inside one call can be missed. That takes well under a second; acceptable.
-- Each guarded call adds two window and two process listings, run in parallel (a window listing is about 0.6 s).
 
 **Kill switch:** create `desktop.OFF` in this folder. It takes effect on the next call, no restart (a call already running finishes). Delete it to turn desktop control back on.
 

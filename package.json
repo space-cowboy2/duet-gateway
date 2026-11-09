@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node gateway.mjs",
-    "check": "node selfcheck.mjs && node sessioncheck.mjs && node doctorcheck.mjs",
+    "check": "node selfcheck.mjs && node sessioncheck.mjs && node doctorcheck.mjs && node desktopcheck.mjs",
     "doctor": "node doctor.mjs",
     "set-passphrase": "node gateway.mjs set-passphrase",
     "check:sessions": "node sessioncheck.mjs"

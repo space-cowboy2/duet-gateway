@@ -156,6 +156,34 @@ const run = async (probe, opts = {}) => {
   assert.equal(by("claude").level, "warn");
 }
 
+// 5b. Desktop control: the `pc` upstream.
+{
+  const EXE = P("bin", "agent-desktop.exe"), same = (a, b) => path.resolve(a) === path.resolve(b);
+  const pcRun = (pc, { exe = true, off = false } = {}) => {
+    const p = healthy(pc && { upstreams: [pc] }), has = p.exists;
+    p.exists = x => (exe && same(x, EXE)) || (off && same(x, P("gw", "desktop.OFF"))) || has(x);
+    return run(p);
+  };
+  const pc = { prefix: "pc", enabled: true, command: EXE, args: ["mcp"], allow: ["desktop_snapshot"], screenGuard: { apps: ["OUTLOOK.EXE"] } };
+  let by;
+  ({ by } = await pcRun(undefined)); assert.deepEqual([by("desktop control").level, by("desktop control").detail], ["ok", "off"]);
+  ({ by } = await pcRun({ ...pc, enabled: false })); assert.deepEqual([by("desktop control").level, by("desktop control").detail], ["ok", "off"]);
+  ({ by } = await pcRun(pc, { exe: false })); assert.equal(by("desktop control").level, "fail"); assert.match(by("desktop control").detail, /agent-desktop not found at .*agent-desktop.exe/);
+  ({ by } = await pcRun(pc, { off: true })); assert.equal(by("desktop control").level, "warn"); assert.match(by("desktop control").detail, /desktop.OFF/);
+  ({ by } = await pcRun(pc)); assert.equal(by("desktop control").level, "ok"); assert.match(by("desktop control").detail, /Needs approval/);
+  // No `enabled` key: the gateway runs it, so the doctor must not say "off".
+  ({ by } = await pcRun({ ...pc, enabled: undefined })); assert.match(by("desktop control").detail, /^on/);
+  // Enabled but unguarded: fail before anything else (the exe exists here, so only the guard check can fail it).
+  for (const bad of [{ allow: undefined }, { screenGuard: undefined }, { screenGuard: {} }, { screenGuard: { apps: [], titles: [] } }]) {
+    ({ by } = await pcRun({ ...pc, ...bad }));
+    assert.equal(by("desktop control").level, "fail"); assert.match(by("desktop control").detail, /no allowlist or screen guard/);
+  }
+  ({ by } = await pcRun({ ...pc, screenGuard: { titles: ["x"] } })); assert.equal(by("desktop control").level, "ok");
+  ({ by } = await pcRun({ ...pc, allow: ["desktop_snapshot", "desktop_clipboard_get", "desktop_batch"] }));
+  assert.equal(by("desktop control").level, "fail"); assert.match(by("desktop control").detail, /^pc allowlist includes desktop_clipboard_get, desktop_batch$/);
+  ({ by } = await pcRun({ ...pc, enabled: false, allow: undefined })); assert.equal(by("desktop control").level, "ok");
+}
+
 // 6. Exit code.
 {
   const lines = [];

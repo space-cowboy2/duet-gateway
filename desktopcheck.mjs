@@ -25,7 +25,7 @@ const server = new Server({ name: "fake-desktop", version: "0" }, { capabilities
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: ["desktop_list_windows", "desktop_screenshot", "desktop_clipboard_get"].map(name => ({ name, description: name, inputSchema: { type: "object" } })),
 }));
-server.setRequestHandler(CallToolRequestSchema, async ({ params: { name } }) => {
+server.setRequestHandler(CallToolRequestSchema, async ({ params: { name, arguments: a } }) => {
   fs.appendFileSync(C, name + "\\n");
   if (name === "desktop_list_windows") {
     const w = JSON.parse(fs.readFileSync(W, "utf8"));
@@ -35,6 +35,7 @@ server.setRequestHandler(CallToolRequestSchema, async ({ params: { name } }) => 
   }
   if (name === "desktop_screenshot") {
     if (process.env.FAKE_OPEN_ON_SHOT) fs.writeFileSync(W, JSON.stringify([{ app_name: "OUTLOOK.EXE", title: "x" }]));
+    if (a?.boom) throw new Error("boom Re: payroll"); // a protocol error, so the client's callTool rejects
     return { content: [{ type: "image", mimeType: "image/png", data: "iVBO" }] };
   }
   return { content: [{ type: "text", text: "clip" }] };
@@ -124,6 +125,11 @@ try {
   reset();
   await refusal(racy.callTool("pc_desktop_screenshot", {}), /opened during the call \(OUTLOOK\.EXE\).*dropped/);
   assert.equal(calls("desktop_screenshot"), 1);
+  // ...and when the call itself throws, the after-check still runs and its refusal replaces the error text
+  setWindows([]);
+  reset();
+  await refusal(racy.callTool("pc_desktop_screenshot", { boom: 1 }), /opened during the call \(OUTLOOK\.EXE\)/);
+  assert.equal(calls("desktop_list_windows"), 2);
 
   // output_path is refused before anything reaches the fake server
   setWindows([]);

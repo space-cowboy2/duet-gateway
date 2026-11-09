@@ -233,9 +233,11 @@ class Upstream {
     if (fs.existsSync(path.join(this.dir, this.guard.offFile || "desktop.OFF"))) throw refused("desktop control is off (desktop.OFF on the PC). Danny has to delete that file to turn it back on.");
     if (Object.hasOwn(args, "output_path")) throw refused("output_path is not allowed: screenshots are returned, never saved on the PC.");
     await this.#check(n => `refused: work apps are open on the PC. Ask Danny to close these first: ${n}`);
-    const res = await run();
-    // Even a failed call is checked, and a refusal here wins over its result.
-    await this.#check(n => `refused: a work app opened during the call (${n}), so the result was dropped.`);
+    // Even a failed or thrown call is checked, and a refusal here wins over its result or error text.
+    const after = () => this.#check(n => `refused: a work app opened during the call (${n}), so the result was dropped.`);
+    let res;
+    try { res = await run(); } catch (e) { await after(); throw e; }
+    await after();
     return res;
   }
   close() { return this.client?.close(); }

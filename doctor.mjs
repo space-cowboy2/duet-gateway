@@ -142,7 +142,8 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
     : ["ok", "duet.OFF", "absent"]));
 
   const pc = Array.isArray(cfg.upstreams) ? cfg.upstreams.find(u => u?.prefix === "pc") : null;
-  add(...(pc?.enabled !== true ? ["ok", "desktop control", "off"]
+  // Same rule as makeContext: an upstream runs unless enabled is false.
+  add(...(!pc || pc.enabled === false ? ["ok", "desktop control", "off"]
     : !probe.exists(String(pc.command)) ? ["fail", "desktop control", `agent-desktop not found at ${pc.command}`]
     : probe.exists(path.join(path.dirname(file), "desktop.OFF")) ? ["warn", "desktop control", "switched off (desktop.OFF)"]
     : ["ok", "desktop control", "on; turn on Needs approval for act tools in claude.ai"]));

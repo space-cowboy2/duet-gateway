@@ -171,6 +171,8 @@ const run = async (probe, opts = {}) => {
   ({ by } = await pcRun(pc, { exe: false })); assert.equal(by("desktop control").level, "fail"); assert.match(by("desktop control").detail, /agent-desktop not found at .*agent-desktop.exe/);
   ({ by } = await pcRun(pc, { off: true })); assert.equal(by("desktop control").level, "warn"); assert.match(by("desktop control").detail, /desktop.OFF/);
   ({ by } = await pcRun(pc)); assert.equal(by("desktop control").level, "ok"); assert.match(by("desktop control").detail, /Needs approval/);
+  // No `enabled` key: the gateway runs it, so the doctor must not say "off".
+  ({ by } = await pcRun({ prefix: "pc", command: EXE })); assert.match(by("desktop control").detail, /^on/);
 }
 
 // 6. Exit code.

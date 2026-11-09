@@ -166,8 +166,24 @@ function localTools(cfg, guard) {
 }
 
 // ---- upstream stdio servers ----
+export function compileGuard(g) {
+  const titles = (g.titles || []).map(p => {
+    try { return new RegExp(p, "i"); } catch { throw new Error(`screenGuard: bad title pattern ${p}`); }
+  });
+  return { offFile: g.offFile, apps: new Set((g.apps || []).map(a => a.toLowerCase())), titles };
+}
+
+// Exe names (as reported) of windows that are on the work-app list or whose title matches. Minimized windows count.
+export function blockedApps(windows, guard) {
+  const g = guard.apps instanceof Set ? guard : compileGuard(guard);
+  return [...new Set(windows.filter(w => g.apps.has(String(w.app_name).toLowerCase()) || g.titles.some(re => re.test(w.title ?? ""))).map(w => w.app_name))];
+}
+
 class Upstream {
-  constructor(spec) { Object.assign(this, spec); this.client = null; this.connecting = null; }
+  constructor(spec) {
+    Object.assign(this, spec); this.client = null; this.connecting = null;
+    this.guard = spec.screenGuard && compileGuard(spec.screenGuard);
+  }
   get() {
     if (this.client) return Promise.resolve(this.client);
     this.connecting ??= (async () => {
@@ -182,7 +198,10 @@ class Upstream {
   async tools() {
     const { tools } = await (await this.get()).listTools();
     return tools.filter(t => !this.allow || this.allow.includes(t.name))
-      .map(t => ({ ...t, name: `${this.prefix}_${t.name}`, description: `[${this.prefix}] ${t.description || ""}` }));
+      .map(t => ({
+        ...t, name: `${this.prefix}_${t.name}`, description: `[${this.prefix}] ${t.description || ""}`,
+        ...(this.readOnly && { annotations: this.readOnly.includes(t.name) ? { readOnlyHint: true } : { readOnlyHint: false, destructiveHint: true } }),
+      }));
   }
   async call(name, args) {
     if (this.allow && !this.allow.includes(name)) throw new Error(`not allowed: ${this.prefix}_${name}`);
@@ -197,7 +216,7 @@ export function makeContext(cfg) {
   const local = localTools(cfg, guard);
   const sessions = cfg.claude ? makeSessions(cfg, log) : null;
   if (sessions) Object.assign(local, sessions.tools);
-  const ups = (cfg.upstreams || []).map(s => new Upstream(s));
+  const ups = (cfg.upstreams || []).filter(s => s.enabled !== false).map(s => new Upstream(s));
   return {
     ups,
     sessions,

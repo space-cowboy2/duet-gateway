@@ -142,8 +142,16 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
     : ["ok", "duet.OFF", "absent"]));
 
   const pc = Array.isArray(cfg.upstreams) ? cfg.upstreams.find(u => u?.prefix === "pc") : null;
+  // Tools that would get around the guard or show work data (clipboard, toasts, batch's sub-commands).
+  const UNSAFE = ["clipboard_get", "clipboard_set", "clipboard_clear", "batch", "list_notifications", "notification_action",
+    "dismiss_notification", "dismiss_all_notifications"].map(n => "desktop_" + n);
+  const guard = pc?.screenGuard;
+  const unsafe = Array.isArray(pc?.allow) ? pc.allow.filter(n => UNSAFE.includes(n)) : [];
   // Same rule as makeContext: an upstream runs unless enabled is false.
   add(...(!pc || pc.enabled === false ? ["ok", "desktop control", "off"]
+    : !Array.isArray(pc.allow) || !(strs(guard?.apps).length || strs(guard?.titles).length)
+      ? ["fail", "desktop control", "pc upstream has no allowlist or screen guard (see config.example.json)"]
+    : unsafe.length ? ["fail", "desktop control", `pc allowlist includes ${unsafe.join(", ")}`]
     : !probe.exists(String(pc.command)) ? ["fail", "desktop control", `agent-desktop not found at ${pc.command}`]
     : probe.exists(path.join(path.dirname(file), "desktop.OFF")) ? ["warn", "desktop control", "switched off (desktop.OFF)"]
     : ["ok", "desktop control", "on; turn on Needs approval for act tools in claude.ai"]));

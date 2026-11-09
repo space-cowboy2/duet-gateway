@@ -83,14 +83,16 @@ git diff main duet/work
 1. In `config.json`, copy the `pc` upstream from `config.example.json` and set `"enabled": true`. Check `command` points at `agent-desktop-win32-x64.exe` on this machine.
 2. Restart the gateway. Until then the tools don't exist.
 3. In claude.ai, open the connector's tool settings and set the act tools to **Needs approval**. They are marked as write tools, so they group together. The read tools (`snapshot`, `screenshot`, `find`, `get`, `is`, `wait`, `list_*`, `status`, `version`, `skills_*`) can stay on Always allow.
-4. `npm run doctor` shows a `desktop control` line: `ok` on, `warn` if `desktop.OFF` exists, `fail` if the exe is missing.
+4. `npm run doctor` shows a `desktop control` line: `ok` on, `warn` if `desktop.OFF` exists, `fail` if the exe is missing, the upstream has no `allow` list or `screenGuard`, or `allow` holds a clipboard, `batch` or notification tool.
 
-**Work-app guard.** Before and after every `pc_desktop_*` call the gateway lists the open windows (minimized ones too). It refuses the call if any window belongs to `OUTLOOK.EXE`, `wfica32.exe`, `CDViewer.exe`, `SelfService.exe`, `ms-teams.exe`, `Teams.exe`, `EgnyteClient.exe` or `EgnyteDrive.exe` (Outlook, Citrix, Teams, Egnyte), or has a title matching Outlook, Egnyte, Viewpoint, Vista, Citrix, Primoris, Teams or SharePoint (case-insensitive). The patterns are `screenGuard.titles` in config. The check after the call matters: if a work window appeared meanwhile (say `launch` opened one), the result is thrown away, so that screenshot never leaves. It also:
+**Work-app guard.** Before and after every `pc_desktop_*` call the gateway lists the open windows (minimized ones too) and the running processes, in parallel. It refuses the call if any window belongs to, or a process is running from, `OUTLOOK.EXE`, `olk.exe` (new Outlook), `wfica32.exe`, `CDViewer.exe`, `SelfService.exe`, `CitrixWorkspace.exe`, `Receiver.exe`, `mstsc.exe` (Citrix and remote desktop), `ms-teams.exe`, `Teams.exe`, `EgnyteClient.exe`, `EgnyteDrive.exe` or `EXCEL.EXE`, so Outlook or Teams sitting in the tray with no window still blocks. Excel is on the list because JCA data lives there and a workbook title like "JCA 1234.xlsx" matches no title pattern; desktop control is therefore refused whenever Excel is open (remove `EXCEL.EXE` from `apps` in your own config.json if you accept that). A window with a title matching Outlook, Egnyte, Viewpoint, Vista, Citrix, Primoris, Teams or SharePoint (case-insensitive). The patterns are `screenGuard.titles` in config. The check after the call matters: if a work window appeared meanwhile (say `launch` opened one), the result is thrown away, so that screenshot never leaves. It also:
 - refuses any `output_path` argument, which would write a file anywhere as you;
 - refuses every call while `desktop.OFF` exists in this folder;
-- fails closed: if the window list errors or can't be read, the call is refused.
+- fails closed: if the window or process list errors or can't be read, the call is refused.
 
-The refusal names only the exe ("close these first: OUTLOOK.EXE"), never a window title, because titles can hold email subjects. `gateway.log` gets `tool pc_desktop_x refused: work apps open`. A bad regex in `titles` stops the gateway at startup instead of being skipped.
+An agent-desktop upstream with a non-empty `screenGuard` but no `allow` list makes the gateway refuse to start, so a copy of the example that loses its allowlist can't run with all 67 tools.
+
+The refusal names only the exe ("close these first: OUTLOOK.EXE"), never a window title, because titles can hold email subjects. `gateway.log` gets `tool pc_desktop_x refused: <kind>`, where kind is `work apps open`, `window check failed`, `desktop.OFF` or `output_path` (never names or titles). A bad regex in `titles` stops the gateway at startup instead of being skipped.
 
 **Tools left out**
 - `clipboard_get/set/clear`: the clipboard can hold something copied from Vista, and the guard can't see it.
@@ -102,11 +104,13 @@ The refusal names only the exe ("close these first: OUTLOOK.EXE"), never a windo
 
 **Known limits**
 - The title guard sees only each window's current title. A work page in a browser *background tab* isn't caught, and File Explorer on `Z:\` shows just the folder name. Close or switch those first.
+- Excel is caught only by exe name, so any open workbook blocks desktop control, work or not.
+- `desktop.OFF` is checked when a call starts; a call already running finishes.
 - The approval tap is the real protection against a booby-trapped email steering Duet. The act tools include `launch` and `type`, so with approval Duet could open PowerShell and type into it as you. Read each card.
 - The check before and after a call is not atomic. A work window that opens *and closes* inside one call can be missed. That takes well under a second; acceptable.
-- Each guarded call adds two window listings (about 0.6 s each).
+- Each guarded call adds two window and two process listings, run in parallel (a window listing is about 0.6 s).
 
-**Kill switch:** create `desktop.OFF` in this folder. It takes effect on the next call, no restart. Delete it to turn desktop control back on.
+**Kill switch:** create `desktop.OFF` in this folder. It takes effect on the next call, no restart (a call already running finishes). Delete it to turn desktop control back on.
 
 ## Pull request review
 Every PR into `main` runs `.github/workflows/pr-review.yml`:

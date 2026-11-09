@@ -130,7 +130,12 @@
           "ms-teams.exe",
           "Teams.exe",
           "EgnyteClient.exe",
-          "EgnyteDrive.exe"
+          "EgnyteDrive.exe",
+          "EXCEL.EXE",
+          "olk.exe",
+          "CitrixWorkspace.exe",
+          "Receiver.exe",
+          "mstsc.exe"
         ],
         "titles": [
           "\\bOutlook\\b",

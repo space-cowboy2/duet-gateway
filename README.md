@@ -90,7 +90,7 @@ git diff main duet/work
 - refuses every call while `desktop.OFF` exists in this folder;
 - fails closed: if the window or process list errors or can't be read, the call is refused.
 
-An agent-desktop upstream with a non-empty `screenGuard` but no `allow` list makes the gateway refuse to start, so a copy of the example that loses its allowlist can't run with all 67 tools.
+An agent-desktop upstream without an `allow` list, or without a `screenGuard` that has apps or titles, makes the gateway refuse to start, so a copy of the example that loses either can't run unguarded with all 67 tools.
 
 The refusal names only the exe ("close these first: OUTLOOK.EXE"), never a window title, because titles can hold email subjects. `gateway.log` gets `tool pc_desktop_x refused: <kind>`, where kind is `work apps open`, `window check failed`, `desktop.OFF` or `output_path` (never names or titles). A bad regex in `titles` stops the gateway at startup instead of being skipped.
 

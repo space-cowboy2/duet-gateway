@@ -55,7 +55,12 @@ try {
   const text = r => r.content[0].text;
   // Off Windows the instructions describe the Mac and leave out tools this machine doesn't have.
   if (!WIN) assert.ok(/always-on Mac/.test(ctx.instructions()) && !/Egnyte|money_/.test(ctx.instructions()), ctx.instructions());
-  assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "guide", "run_command"]);
+  assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "guide", "health_report", "run_command"]);
+  // health_report is read-only and returns the summary as JSON.
+  const hr = (await ctx.listTools()).find(t => t.name === "health_report");
+  assert.equal(hr.annotations?.readOnlyHint, true);
+  const report = JSON.parse(text(await ctx.callTool("health_report", { hours: 2 })));
+  assert.ok(report.window.hours === 2 && Array.isArray(report.findings) && Array.isArray(report.doctor), JSON.stringify(report).slice(0, 300));
   // The guide's playbook is written for the PC, so off Windows the status names this machine first.
   if (!WIN) assert.match(text(await ctx.callTool("guide", {})),
     /## On this Mac right now\n\n- This machine: Danny's Mac, a Mac\. Where this guide says PC or Windows, read this Mac\. A session here is a separate macOS user\.\n- Desktop control: not set up on this Mac\n/);

@@ -19,6 +19,8 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { makeSessions } from "./sessions.mjs";
+import { AGENT_DIR, MAC_AGENT_DIR, diagnose } from "./doctor.mjs";
+import { findings, scrub, summarize, tail } from "./health.mjs";
 import { isBrowser, profileDir, refusedFlags, webUpstream, webUrlProblem } from "./web.mjs";
 
 const VERSION = "1.3.0";
@@ -359,6 +361,21 @@ export function makeContext(cfg) {
     const names = Object.keys(cfg.commands || {});
     lines.push(`- Named commands (run_command): ${names.length ? names.join(", ") : "none"}`);
     return lines;
+  };
+  // Read-only: counts and outcomes from gateway.log and runner.log, plus the doctor's checks, for the monitor task.
+  local.health_report = {
+    description: `Usage and error summary for this gateway: per-tool call counts, errors, refusals and timings, upstream outages, restarts, Claude Code session and runner failures, the doctor's checks, and a list of findings with stable fingerprints. Counts and outcomes only, never arguments or results. For the monitor that files GitHub issues.`,
+    inputSchema: { type: "object", properties: { hours: { type: "number", minimum: 1, maximum: 720, description: "How far back to look (default 24)" } }, additionalProperties: false },
+    annotations: { readOnlyHint: true },
+    run: async ({ hours = 24 }) => {
+      const h = Math.min(720, Math.max(1, Number(hours) || 24));
+      const runnerLog = path.join(WIN ? AGENT_DIR : MAC_AGENT_DIR, "logs", "runner.log");
+      const sum = summarize({ gatewayLog: tail(logFile), runnerLog: tail(runnerLog), hours: h });
+      let doctor = [];
+      try { doctor = await diagnose({ file: cfg.file }); } catch (e) { doctor = [{ level: "warn", check: "doctor", detail: `could not run (${e?.code || "error"})` }]; }
+      doctor = doctor.map(d => ({ level: d.level, check: scrub(d.check), detail: scrub(d.detail) }));
+      return JSON.stringify({ version: VERSION, platform: process.platform, ...sum, doctor, findings: findings(sum, doctor) }, null, 1);
+    },
   };
   local.guide = {
     description: `How Danny wants work on his ${PC} and online carried out: which tools to use for what, the order, how to check the result, when to ask him, plus what is switched on right now and his own notes. Read it before the first computer or web task of a conversation.`,

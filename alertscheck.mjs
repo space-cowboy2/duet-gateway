@@ -36,6 +36,7 @@ const make = (over = {}) => makeAlerter({ cfg, dir, logFile, log: m => logged.pu
 // No alerts config, or a bad repo: no alerter.
 assert.equal(makeAlerter({ cfg: {}, dir, logFile, log() {} }), null);
 assert.equal(makeAlerter({ cfg: { alerts: { enabled: true, repo: "x; rm" } }, dir, logFile, log() {} }), null);
+assert.equal(makeAlerter({ cfg: { alerts: { enabled: true, repo: "../.." } }, dir, logFile, log() {} }), null);
 // The shipped example is off, so copying it never files issues.
 const example = JSON.parse(fs.readFileSync(new URL("./config.example.json", import.meta.url), "utf8"));
 assert.equal(example.alerts.enabled, false);

@@ -85,14 +85,16 @@ export function realProbe() {
   };
 }
 
-// Finds a bare command name on PATH the way the shell would.
-function findCommand(cmd, probe) {
-  if (/[\\/]/.test(cmd)) return probe.exists(cmd);
+// Finds a bare command name on PATH the way the shell would. Returns the file it would run, or null.
+function whichCommand(cmd, probe) {
+  if (/[\\/]/.test(cmd)) return probe.exists(cmd) ? cmd : null;
   const win = probe.platform === "win32";
   const dirs = String(probe.env.PATH || probe.env.Path || "").split(win ? ";" : ":").filter(Boolean);
   const exts = win && !path.extname(cmd) ? String(probe.env.PATHEXT || ".EXE;.CMD;.BAT").split(";") : [""];
-  return dirs.some(d => exts.some(e => probe.exists(path.join(d, cmd + e))));
+  for (const d of dirs) for (const e of exts) if (probe.exists(path.join(d, cmd + e))) return path.join(d, cmd + e);
+  return null;
 }
+const findCommand = (cmd, probe) => whichCommand(cmd, probe) !== null;
 
 export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.join(HERE, "config.json"),
   probe = realProbe(), agentDir = AGENT_DIR } = {}) {
@@ -175,6 +177,30 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
     : everydayFlags(web.args).length
       ? ["warn", "web browser", `on, attached to your everyday browser (${everydayFlags(web.args).join(", ")}): every sign-in in it is in reach, work ones too`]
     : ["ok", "web browser", "on, with its own profile"]));
+
+  // The other upstreams (tv, money): the gateway starts each one as a program. A command or script that is not there
+  // makes the whole tool group disappear from Claude, so both are checked. This PATH is the doctor's own; a gateway
+  // started another way (a scheduled task) can see a different one, and gateway.log has what it saw.
+  for (const u of (Array.isArray(cfg.upstreams) ? cfg.upstreams : []).filter(u => u && typeof u === "object" && u !== pc && u !== web)) {
+    const check = `upstream ${u.prefix}`;
+    if (u.enabled === false) { add("ok", check, "off"); continue; }
+    const found = str(u.command) ? whichCommand(u.command, probe) : null;
+    const scriptFile = strs(u.args).find(a => /\.(py|[cm]?js)$/i.test(a));
+    add(...(!str(u.command) ? ["fail", check, "no command in config.json"]
+      : !found ? ["fail", check, `${u.command} not found, so the ${u.prefix}_* tools are missing`]
+      : scriptFile && !probe.exists(scriptFile) ? ["fail", check, `${scriptFile} not found, so the ${u.prefix}_* tools are missing`]
+      // Windows ships a "python.exe" that only opens the Store. With Python from the Store it is the real one.
+      : /[\\/]WindowsApps[\\/]python[\d.]*\.exe$/i.test(found)
+        ? ["warn", check, `${u.command} is the Microsoft Store alias (${found}). Unless Python came from the Store it starts nothing: put the full path to python.exe in config.json`]
+      : ["ok", check, `${u.command}${scriptFile ? ` runs ${path.win32.basename(scriptFile)}` : ""}`]));
+    // The TV server only passes calls on to the TV hub, a separate program on this PC.
+    if (path.win32.basename(scriptFile || "").toLowerCase() !== "tv_mcp.py") continue;
+    let hub = null;
+    try { hub = new URL(probe.env.TVREMOTE_HUB_URL || "http://127.0.0.1:8080"); } catch {}
+    if (!hub || !["127.0.0.1", "localhost"].includes(hub.hostname)) add("ok", "TV hub", "on another computer, not checked here");
+    else add(...(await probe.port(Number(hub.port) || 80) ? ["ok", "TV hub", `127.0.0.1:${hub.port || 80} answers`]
+      : ["warn", "TV hub", `nothing answers on 127.0.0.1:${hub.port || 80}: the TV hub is not running, so every ${u.prefix}_* call fails (tv-remote: deploy\\windows\\install-hub.ps1)`]));
+  }
 
   const port = cfg.port;
   if (!Number.isInteger(port) || port < 1 || port > 65535) add("fail", "gateway port", "port is not set in config.json (normally 8787)");

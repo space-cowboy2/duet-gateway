@@ -20,7 +20,7 @@ Duet is told to act like an agent, not a remote control: you ask for an outcome,
 - **[PLAYBOOK.md](PLAYBOOK.md)**, returned by the `guide` tool. It says which tool to use for what, how to recover from a failed step without repeating a payment or a send, what counts as proof, and what the report should hold. Edit it to change how Duet works here. Restart is not needed: the file is read on every call.
 - **`notes` in `config.json`**: a list of plain sentences that `guide` adds at the end, for what is true on this PC only (restart the gateway after you change them). For example `"Order household things from Amazon, never above $60 without asking."` or `"The web browser is signed in to Amazon and OpenTable."`.
 
-`guide` also lists what is on right now and which off switches are set, so Duet can say what it can't do instead of trying.
+`guide` also lists what is on right now, which off switches are set, and whether the TV and bank servers are answering, so Duet can say what it can't do instead of trying.
 
 ### Approvals: who decides each step
 The gateway marks every tool that changes something (`pc_desktop_click`, `web_browser_navigate` and so on) as a write tool. In claude.ai, open the connector's tool settings and choose one of two ways to run them.
@@ -181,11 +181,22 @@ The review action refuses to run when a PR changes `pr-review.yml` itself (the f
 
 To change the bar, edit `REVIEW.md`. The reviewer always judges a PR by the `REVIEW.md` on `main`, so a PR can't lower the bar for itself.
 
+## TV and bank tools: when a server does not start
+`tv_*` and `money_*` come from two programs the gateway starts itself (the `tv` and `money` upstreams in `config.json`). A program that does not start lists no tools, so the whole group is missing in claude.ai. The gateway says why, in three places:
+
+- **`guide`**, under "On this PC right now": `- TV (tv_*): on, 24 tools`, or `- TV (tv_*): not answering (command not found: python). Its tools are missing until that is fixed on the PC`. A server that was down is asked again each time `guide` is called, so a fix shows without a restart.
+- **`gateway.log`**: one line each time a server's state changes, such as `upstream tv up, 24 tools` or `upstream tv unavailable: python started and exited at once (wrong script path, or it crashed)`. The line has the program's file name and a fixed reason, never a path or the program's output. The gateway starts every server once at startup, so the log shows the state right away.
+- **`npm run doctor`**: an `upstream tv` and an `upstream money` line (`fail` when the command or its script is not found; `warn` when `python` is only the Microsoft Store alias), and a `TV hub` line.
+
+The reasons: `command not found` (not on the gateway's PATH: use the full path in `command`), `started and exited at once` (the script path in `args` is wrong, or the program crashed), `started but did not answer in 15 s`. A server that hangs is given up on after that time, so it does not hold up the tool list for the others.
+
+The TV server (`tv_mcp.py` from [tv-remote](https://github.com/space-cowboy2/tv-remote)) only passes calls on to the TV hub, a second program that talks to the TV and has to be running on this PC (`127.0.0.1:8080`). In the tv-remote folder, `deploy\windows\install-hub.ps1` installs it and starts it at every logon; `tvremote pair` pairs it with the TV. With the server up and the hub down, the `tv_*` tools are listed and each call answers `hub_unreachable`.
+
 ## Not in git (per machine)
 `config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `duet.OFF`, `desktop.OFF`, `web.OFF`. The web browser's profile and downloads live outside this folder, in `%LOCALAPPDATA%\duet-gateway`.
 
 ## Notes
-- Health check: `npm run doctor` (or `node gateway.mjs doctor`) prints one `ok`, `warn` or `fail` line per check and exits 1 on any `fail`. It checks config.json, the passphrase, `publicUrl`, `roots`, the `claude` section (command, runner token, workspaces that hold or sit inside your own repos), `egnyteEnabled`, the Egnyte drive, `duet.OFF`, desktop control (the `pc` upstream and `desktop.OFF`), the web browser (the `web` upstream and `web.OFF`), both loopback ports, the `duet-agent-runner` task and the last `runner.log` line. It never prints secrets or file contents. Run it from an elevated prompt to also compare the runner token with `C:\ProgramData\duet-agent\runner-token`.
+- Health check: `npm run doctor` (or `node gateway.mjs doctor`) prints one `ok`, `warn` or `fail` line per check and exits 1 on any `fail`. It checks config.json, the passphrase, `publicUrl`, `roots`, the `claude` section (command, runner token, workspaces that hold or sit inside your own repos), `egnyteEnabled`, the Egnyte drive, `duet.OFF`, desktop control (the `pc` upstream and `desktop.OFF`), the web browser (the `web` upstream and `web.OFF`), the other upstreams (the command and script of `tv` and `money`, and whether the TV hub answers), both loopback ports, the `duet-agent-runner` task and the last `runner.log` line. It never prints secrets or file contents. Run it from an elevated prompt to also compare the runner token with `C:\ProgramData\duet-agent\runner-token`.
 - Kill switches: create `duet.OFF` in this folder to refuse new Claude Code turns; create `desktop.OFF` to refuse every `pc_desktop_*` call; create `web.OFF` to refuse every `web_*` call; `tailscale funnel reset` closes the endpoint; `Stop-ScheduledTask duet-agent-runner` stops the runner.
 - Anything Claude reads through these tools is sent to Anthropic's cloud. Keep work data (Z:\ Egnyte, Vista) out of `roots`. Egnyte files are reachable through the approval-gated Egnyte tools, and anything open on the desktop (Egnyte, Vista and Outlook included) through `pc_desktop_*` while desktop control is on. The web browser reaches a work site only if you sign its profile in to one, so don't.
 - Normal and Egnyte sessions share your Claude plan's usage limits.

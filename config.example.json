@@ -1,5 +1,6 @@
 {
   "port": 8787,
+  "machineName": "Danny's PC",
   "publicUrl": "https://pc.tail24f732.ts.net",
   "passphraseHash": "",
   "roots": [

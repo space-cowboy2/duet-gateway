@@ -1,19 +1,21 @@
 // Doctor check: the health checks in doctor.mjs against a fake machine, plus the real probe's port and owner checks
 // and `node gateway.mjs doctor` with a missing config. Runs on Windows, macOS and Linux. Run: node doctorcheck.mjs
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { diagnose, format, realProbe, runDoctor } from "./doctor.mjs";
+import { DAEMON_PLIST, MAC_AGENT_DIR, deniesUser, diagnose, format, realProbe, runDoctor } from "./doctor.mjs";
 
 const B = path.resolve("/fake"), P = (...a) => path.join(B, ...a);
 const HASH = "scrypt$" + "ab".repeat(16) + "$" + "cd".repeat(32), TOKEN = "secret-runner-token-123";
 const agentDir = P("agent"), cfgFile = P("gw", "config.json");
 
 // A fake machine: dirs, files (path → text), which .git dirs are Danny's, listening ports, task state, links (path → real path).
-function fakeProbe({ dirs = [], files = {}, mine = [], ports = [], task = "Running", platform = "win32", env = {}, links = {} } = {}) {
+// For a Mac: the home folder, its `ls -lde` output and the command lines duet-agent is running.
+function fakeProbe({ dirs = [], files = {}, mine = [], ports = [], task = "Running", platform = "win32", env = {}, links = {},
+  home = P("home"), acl = "", commands = [] } = {}) {
   const D = new Set(dirs.map(d => path.resolve(d))), F = new Map(Object.entries(files).map(([k, v]) => [path.resolve(k), v]));
   const all = () => [...D, ...F.keys()];
   return {
@@ -26,6 +28,9 @@ function fakeProbe({ dirs = [], files = {}, mine = [], ports = [], task = "Runni
     port: async n => ports.includes(n),
     async mine(ps) { this.calls.mine++; return (mine === null ? null : ps.filter(p => mine.some(m => path.resolve(m) === path.resolve(p)))); },
     task: async () => task,
+    home: () => home,
+    acl: async () => acl,
+    commands: async () => commands,
     real: p => path.resolve(links[path.resolve(p)] ?? p),
     calls: { mine: 0 },
   };
@@ -194,7 +199,77 @@ const run = async (probe, opts = {}) => {
   }
 }
 
-// 5c. The web browser: the `web` upstream (Playwright MCP).
+// 5c. macOS: the runner lives in /Library/Application Support/duet-agent, a LaunchDaemon keeps it running, there is no
+// Egnyte drive, and an ACL on the home folder keeps duet-agent out.
+{
+  const ACL = `drwxr-x---+ 75 danny  staff  2400 Nov  7 09:00 ${P("home")}
+ 0: user:duet-agent deny list,add_file,search,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity
+ 1: group:everyone deny delete
+`;
+  const M = (...a) => path.join(MAC_AGENT_DIR, ...a);
+  const cfg = over => JSON.stringify({ port: 8790, publicUrl: "https://mac.example.ts.net:8443", passphraseHash: HASH, roots: [P("docs")], deny: [],
+    ...over, claude: { command: P("bin", "claude"), runnerPort: 8791, runnerToken: TOKEN, egnyteEnabled: false, workspaces: { duet: P("Duet") }, ...over?.claude } });
+  const mac = (over = {}, probeOver = {}) => fakeProbe({
+    platform: "darwin", dirs: [B, P("gw"), P("docs"), P("Duet"), P("bin"), P("home")],
+    files: { [cfgFile]: cfg(over), [P("bin", "claude")]: "", [DAEMON_PLIST]: "", [M("runner-token")]: TOKEN + "\n",
+      [M("logs", "runner.log")]: "2026-11-01T00:00:00Z runner started\n" },
+    ports: [8790, 8791], acl: ACL, commands: ["-zsh", `/opt/homebrew/bin/node ${M("bin", "runner.mjs")}`], ...probeOver,
+  });
+  // No agentDir here: on a Mac the doctor finds the runner's folder itself.
+  const runMac = probe => run(probe, { agentDir: undefined });
+
+  let { r, text, by, fails } = await runMac(mac());
+  assert.deepEqual(fails, [], text);
+  assert.ok(r.every(x => x.level === "ok"), text);
+  assert.match(by("runnerToken").detail, /matches .*Application Support.duet-agent.runner-token/);
+  assert.match(by("runner daemon").detail, /com\.duet-agent\.runner running as duet-agent/);
+  assert.match(by("home folder").detail, /denies duet-agent/);
+  assert.match(by("runner log").detail, /runner started$/);
+  assert.equal(by("egnyteEnabled").detail, "off");
+  assert.ok(!r.some(x => x.check === "runner task" || x.check === "Egnyte drive"), text);
+  assert.doesNotMatch(text, /ProgramData|\.ps1|ScheduledTask|elevated/);
+
+  // Problems are reported with the Mac's own fixes, never the Windows ones.
+  ({ text, by } = await runMac(mac({ claude: { runnerToken: "" } }, { ports: [] })));
+  assert.match(by("runnerToken").detail, /run sudo \.\/setup-agent-mac\.sh/);
+  assert.match(by("gateway port").detail, /gateway-launchd\.sh/);
+  assert.ok(!text.includes("home folder"), "no sessions set up, so no home folder line");
+  assert.doesNotMatch(text, /\.ps1|ScheduledTask|elevated/);
+  const noRead = mac(); noRead.readFile = (f => x => { if (x.endsWith("runner-token")) throw new Error("EACCES"); return f(x); })(noRead.readFile);
+  assert.match((await runMac(noRead)).by("runnerToken").detail, /not readable here.*sudo npm run doctor can/);
+  assert.match((await runMac(fakeProbe({ platform: "darwin" }))).r[0].detail, /copy config\.example\.mac\.json/);
+
+  // The runner: not installed, installed but down, and another duet-agent process that only mentions runner.mjs.
+  const noPlist = mac(); noPlist.exists = (f => x => path.resolve(x) !== path.resolve(DAEMON_PLIST) && f(x))(noPlist.exists);
+  assert.deepEqual([(await runMac(noPlist)).by("runner daemon").level, (await runMac(noPlist)).by("runner daemon").detail],
+    ["warn", "com.duet-agent.runner is not installed (run sudo ./setup-agent-mac.sh)"]);
+  for (const commands of [[], null, [`cat ${M("bin", "runner.mjs")} -`, "-zsh"]]) {
+    ({ by } = await runMac(mac({}, { commands })));
+    assert.equal(by("runner daemon").level, "warn"); assert.match(by("runner daemon").detail, /not running: sudo launchctl kickstart -k system\/com\.duet-agent\.runner$/);
+  }
+
+  // The home folder's deny entry: gone is a fail, unreadable a warn.
+  ({ by, fails } = await runMac(mac({}, { acl: ACL.replace(/^ 0:.*\n/m, "") })));
+  assert.deepEqual(fails, ["home folder"]); assert.match(by("home folder").detail, /no deny entry for duet-agent.*setup-agent-mac\.sh/);
+  assert.equal((await runMac(mac({}, { acl: null }))).by("home folder").level, "warn");
+  assert.equal(deniesUser(ACL, "duet-agent"), true);
+  assert.equal(deniesUser(ACL, "duet"), false);
+  assert.equal(deniesUser(ACL.replace("user:duet-agent deny", "user:duet-agent inherited deny"), "duet-agent"), true);
+  assert.equal(deniesUser(ACL.replace("deny list", "allow list"), "duet-agent"), false);
+  assert.equal(deniesUser(ACL.replace(",search,", ","), "duet-agent"), false);        // can still walk into the folder
+  assert.equal(deniesUser(ACL.replace("user:duet-agent", "FFFFEEEE-DDDD-CCCC-BBBB-AAAA000001C2"), "duet-agent"), false); // the user was deleted
+
+  // Egnyte is Windows-only: switched on here, it can only fail.
+  ({ by } = await runMac(mac({ claude: { egnyteEnabled: true } })));
+  assert.equal(by("egnyteEnabled").level, "warn"); assert.match(by("egnyteEnabled").detail, /no Egnyte drive/);
+  // A workspace beside Danny's repos gets a Mac path as the example.
+  ({ by } = await runMac(mac({ claude: { workspaces: { w: P("Projects", "scratch") } } },
+    { dirs: [B, P("gw"), P("docs"), P("bin"), P("home"), P("Projects"), P("Projects", "app"), P("Projects", "app", ".git"), P("Projects", "scratch")],
+      mine: [P("Projects", "app", ".git")] })));
+  assert.match(by("workspace w").detail, /such as \/Users\/Shared\/Duet$/);
+}
+
+// 5d. The web browser: the `web` upstream (Playwright MCP).
 {
   const NODE = P("bin", "node.exe"), CLI = P("gw", "node_modules", "@playwright", "mcp", "cli.js"), same = (a, b) => path.resolve(a) === path.resolve(b);
   const webRun = (web, { node = true, cli = true, off = false } = {}) => {
@@ -259,6 +334,28 @@ const run = async (probe, opts = {}) => {
   assert.deepEqual(await real.mine([path.join(tmp, "missing")]), []);
   fs.writeFileSync(path.join(tmp, "log"), "x".repeat(10_000) + "\nlast line\n");
   assert.equal(real.tail(path.join(tmp, "log"), 64).trim().split("\n").at(-1), "last line");
+
+  // The process list duet-agent's runner is looked up in: a child of this test is found by the end of its command line.
+  if (process.platform !== "win32") {
+    const tag = `duet-doctor-probe-${process.pid}`;
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", tag], { stdio: "ignore" });
+    try {
+      const cmds = await real.commands(os.userInfo().username);
+      assert.ok(cmds?.some(c => c.endsWith(tag)), `no process ending in ${tag} among ${cmds?.length} listed`);
+      assert.equal(await real.commands("no-such-user-" + process.pid), null);
+    } finally { child.kill(); }
+  }
+  // The home folder check reads a real ACL: the entry setup-agent-mac.sh adds, here for "nobody" on a temp folder.
+  if (process.platform === "darwin") {
+    const dir = path.join(tmp, "home");
+    fs.mkdirSync(dir);
+    assert.equal(deniesUser(await real.acl(dir), "nobody"), false);
+    const entry = "user:nobody deny list,search,add_file,add_subdirectory,delete_child,readattr,writeattr,readextattr,writeextattr,readsecurity";
+    assert.equal(spawnSync("/bin/chmod", ["+a#", "0", entry, dir]).status, 0, "chmod +a");
+    assert.equal(deniesUser(await real.acl(dir), "nobody"), true, await real.acl(dir));
+    assert.equal(await real.acl(path.join(tmp, "missing")), null);
+    assert.equal(spawnSync("/bin/chmod", ["-N", dir]).status, 0);
+  }
 
   // `node gateway.mjs doctor` reports a missing config instead of crashing.
   const r = spawnSync(process.execPath, [path.join(import.meta.dirname, "gateway.mjs"), "doctor"],

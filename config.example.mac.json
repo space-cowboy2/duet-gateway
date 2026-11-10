@@ -1,0 +1,41 @@
+{
+  "port": 8790,
+  "machineName": "Danny's Mac mini",
+  "publicUrl": "https://dannys-mac-mini.tail24f732.ts.net:8443",
+  "passphraseHash": "",
+  "roots": [
+    "/Users/danny/Code",
+    "/Users/danny/Documents"
+  ],
+  "deny": [
+    "/Users/danny/Code/duet-gateway",
+    "/Users/danny/Documents/Assistant/notes"
+  ],
+  "denyNames": [
+    ".env",
+    ".env.*",
+    "*.key",
+    "*.pem",
+    "*.p12",
+    "*.db",
+    "*.sqlite",
+    "vault*",
+    "id_rsa*",
+    "id_ed25519*",
+    ".git",
+    ".remember"
+  ],
+  "commands": {},
+  "upstreams": [],
+  "claude": {
+    "command": "/Users/danny/.local/bin/claude",
+    "runnerPort": 8791,
+    "runnerToken": "",
+    "egnyteEnabled": false,
+    "workspaces": {
+      "duet": "/Users/Shared/Duet"
+    },
+    "maxParallel": 2,
+    "turnTimeoutSecs": 3600
+  }
+}

@@ -120,34 +120,7 @@
         "desktop_skills_list",
         "desktop_skills_get"
       ],
-      "screenGuard": {
-        "offFile": "desktop.OFF",
-        "apps": [
-          "OUTLOOK.EXE",
-          "wfica32.exe",
-          "CDViewer.exe",
-          "SelfService.exe",
-          "ms-teams.exe",
-          "Teams.exe",
-          "EgnyteClient.exe",
-          "EgnyteDrive.exe",
-          "EXCEL.EXE",
-          "olk.exe",
-          "CitrixWorkspace.exe",
-          "Receiver.exe",
-          "mstsc.exe"
-        ],
-        "titles": [
-          "\\bOutlook\\b",
-          "\\bEgnyte\\b",
-          "\\bViewpoint\\b",
-          "\\bVista\\b",
-          "\\bCitrix\\b",
-          "\\bPrimoris\\b",
-          "\\bTeams\\b",
-          "\\bSharePoint\\b"
-        ]
-      }
+      "offFile": "desktop.OFF"
     }
   ],
   "claude": {

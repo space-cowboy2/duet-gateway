@@ -1,0 +1,39 @@
+# Auto-merge: when the "PR review" workflow (Tests + Claude review) passes on a PR from a branch in this repo, merge it.
+# Fork PRs are never merged. A PR that changes the rules the agents work under (REVIEW.md, MONITOR.md, .github/)
+# is left for Danny. Turn it off by disabling this workflow in GitHub Actions.
+name: Auto-merge
+
+on:
+  workflow_run:
+    workflows: [PR review]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge if everything passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/$REPO/pulls?state=open&head=${REPO%%/*}:$BRANCH" --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then echo "No open PR for $BRANCH"; exit 0; fi
+          info=$(gh api "repos/$REPO/pulls/$pr")
+          if [ "$(jq -r .draft <<<"$info")" = "true" ]; then echo "#$pr is a draft"; exit 0; fi
+          if [ "$(jq -r .head.sha <<<"$info")" != "$SHA" ]; then echo "#$pr has newer commits; their review decides"; exit 0; fi
+          guarded=$(gh api "repos/$REPO/pulls/$pr/files" --paginate --jq '.[].filename' | grep -E '^(REVIEW\.md|MONITOR\.md|\.github/)' || true)
+          if [ -n "$guarded" ]; then
+            gh pr comment "$pr" --repo "$REPO" --body "Auto-merge: not merging, because this PR changes the rules the agents work under ($(echo $guarded | tr ' ' ',')). Danny merges these himself."
+            exit 0
+          fi
+          gh pr merge "$pr" --repo "$REPO" --squash --delete-branch --match-head-commit "$SHA"
+          echo "Merged #$pr"

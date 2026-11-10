@@ -6,7 +6,7 @@ Three parts keep the gateway improving. GitHub issues are the queue between them
 gateway.log ──▶ alerts.mjs (in the gateway, seconds after a problem) ──┐
 gateway.log, runner.log, doctor ──▶ health_report ──▶ Monitor (daily) ─┴─▶ GitHub issue labelled "monitor"
                                                                               │ (issues event)
-                                    Danny reviews and merges ◀── draft PR ◀── Fixer (.github/workflows/fixer.yml)
+         Auto-merge once Tests + Claude review pass ◀── PR ◀── Fixer (.github/workflows/fixer.yml)
 ```
 
 - **Alerts** (`alerts.mjs`): after a log line that looks like trouble, the gateway waits 30 s, sums up the last hour
@@ -90,13 +90,14 @@ Never paste anything from the report that looks personal: it is already scrubbed
 4. Fix it on a branch `fix/<issue-number>-<slug>`. Keep the change to what the issue needs. Add or extend a test.
 5. Run `npm run check`. `selfcheck.mjs` needs Windows; on Linux run the checks the `linux` job in
    `.github/workflows/check.yml` runs. Don't open a PR with a failing check.
-6. Open a **draft** PR titled `Fixer agent: <what it fixes>` that says `Fixes #<n>`, what changed, and how it was tested. Comment the PR link on the issue and
+6. Open a PR (not a draft) titled `Fixer agent: <what it fixes>` that says `Fixes #<n>`, what changed, and how it was tested. Comment the PR link on the issue and
    add `fixer:pr-open`.
 
 **Hard limits.** Everything in `REVIEW.md` under Blocking applies. Never weaken auth, the path guard, kill switches
 (`duet.OFF`, `desktop.OFF`, `web.OFF`), the act tools' approval marking, the sandbox for sessions, or the rules in
-`HOW_TO_WORK` and `PLAYBOOK.md`. Never add a tool that moves money or sends as Danny. Never merge, approve, push to
-`main`, or mark a PR ready. Never skip or delete a test. If the right fix would need any of that, comment on the issue
+`HOW_TO_WORK` and `PLAYBOOK.md`. Never add a tool that moves money or sends as Danny. Never merge or approve a PR yourself, or push to `main`. Auto-merge
+(`.github/workflows/automerge.yml`) merges a PR once Tests and the Claude review pass; a PR that touches `REVIEW.md`,
+`MONITOR.md` or `.github/` is left for Danny, so open those as drafts. Never skip or delete a test. If the right fix would need any of that, comment on the issue
 and add `needs-danny` instead.
 
 ## Where to look
@@ -109,4 +110,5 @@ and add `needs-danny` instead.
 ## Turning them off
 
 Monitor agent: pause it at claude.ai/code (Scheduled). Alerts: remove `alerts` from `config.json` or delete `github-token`.
+Auto-merge: disable the Auto-merge workflow in GitHub Actions.
 Fixer agent: disable the Fixer agent workflow in GitHub Actions. One issue: add `wontfix-auto`.

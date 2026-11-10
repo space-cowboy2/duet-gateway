@@ -25,6 +25,7 @@ const gatewayLog = [
   `${at(199)} something exploded: TypeError at token sk-ant-oat01-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB`,
   "not a log line",
   `${at(-10)} tool future error 1ms`, // after now
+  ...Array.from({ length: 4 }, (_, i) => `${at(150 - i)} tool read_messages ok 45000ms`),
 ].join("\n");
 const runnerLog = [
   `${at(100)} runner started (instance abcd1234, up to 2 at a time)`,
@@ -66,6 +67,11 @@ for (const fp of ["tool-errors:files_read", "tool-upstream-down:money_get_balanc
   assert(fps.includes(fp), `missing finding ${fp}`);
 assert(fps.some(x => x.startsWith("mcp-error:")));
 assert(fps.some(x => x.startsWith("log-error:something exploded")), "repeated unknown errors group into one finding");
+assert(!fps.includes("tool-slow:read_messages"), "long-poll waits are not slowness");
+assert(!fps.includes("gateway-restarts"), "one restart a day is not a finding");
+const restarts = Array.from({ length: 8 }, (_, i) => `${at(100 - i)} listening on 127.0.0.1:8787`).join("\n");
+assert(findings(summarize({ gatewayLog: restarts, now })).some(x => x.fingerprint === "gateway-restarts"), "8 restarts in a day is");
+assert(!findings(summarize({ gatewayLog: restarts, hours: 72, now })).some(x => x.fingerprint === "gateway-restarts"), "8 in 3 days is not");
 assert(!fps.includes("doctor:config"), "ok doctor lines are not findings");
 assert(!fps.includes("login-failures"), "one failed sign-in is not a finding");
 assert.equal(new Set(fps).size, fps.length, "fingerprints are unique");

@@ -39,7 +39,9 @@ Create a missing label before using it.
 3. Look beyond `findings`. The report also has per-tool counts. Use judgement: a tool that started failing, a new error
    kind, a refusal count that keeps rising. Give each new kind of problem its own fingerprint (`kind:subject`).
    Don't file normal behaviour: a refusal from `desktop.OFF` while that switch is on, one failed sign-in, a single
-   timeout.
+   timeout. Known noise: the TV upstream is off on purpose (no TV is paired), so `upstream-down:tv` and
+   `tool-upstream-down:tv_*` are one `needs-danny` issue at most (remove or disable the `tv` upstream in config.json),
+   never a bug for the fixer.
 4. For each finding, search open and recently closed issues for `fingerprint: <fp>` in the body.
    - Open issue: add one comment with the new counts and window. Don't comment again if nothing changed.
    - Closed in the last 7 days as fixed, and it is back: reopen it and say so.

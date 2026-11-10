@@ -7,6 +7,8 @@ import fs from "node:fs";
 
 const MAX_BYTES = 4 << 20; // the tail of each log that is read
 const MAX_SAMPLES = 5, MAX_LINE = 200, SLOW_MS = 30_000;
+// Tools that wait on purpose (session long-polls up to 45 s, explicit waits), so a long call is not slowness.
+export const WAITS = /^(start_session|send_message|read_messages|start_egnyte_session|send_egnyte_message|pc_desktop_wait|web_browser_wait_for)$/;
 
 // Reads the last `bytes` of a file; "" when it is missing or unreadable.
 export function tail(file, bytes = MAX_BYTES) {
@@ -112,13 +114,15 @@ export function findings(sum, doctor = []) {
   for (const [name, s] of Object.entries(sum.tools)) {
     if (s.error >= 3 && s.error / s.calls >= 0.2) add(`tool-errors:${name}`, "bug", `${name} fails often`, `${s.error} of ${s.calls} calls returned an error`);
     if (s.upstreamDown >= 1) add(`tool-upstream-down:${name}`, "problem", `${name} called while its server was down`, `${s.upstreamDown} of ${s.calls} calls`);
-    if (s.slow >= 3 || (s.calls >= 5 && s.p95ms >= SLOW_MS)) add(`tool-slow:${name}`, "perf", `${name} is slow`, `p95 ${s.p95ms} ms, max ${s.maxMs} ms, ${s.slow} calls over ${SLOW_MS / 1000} s`);
+    if (!WAITS.test(name) && (s.slow >= 3 || (s.calls >= 5 && s.p95ms >= SLOW_MS))) add(`tool-slow:${name}`, "perf", `${name} is slow`, `p95 ${s.p95ms} ms, max ${s.maxMs} ms, ${s.slow} calls over ${SLOW_MS / 1000} s`);
   }
   for (const [u, s] of Object.entries(sum.upstreams))
     if (s.downEvents) add(`upstream-down:${u}`, "problem", `${u} upstream went down`, `${s.downEvents} time(s); last state: ${s.last}`);
   for (const [msg, n] of Object.entries(sum.mcpErrors)) add(`mcp-error:${msg.slice(0, 60)}`, "bug", "MCP request failed", `${n}× ${msg}`);
   for (const [msg, n] of Object.entries(sum.otherErrors)) if (n >= 2) add(`log-error:${msg}`, "bug", "Error in gateway.log", `${n}× ${msg}`);
-  if (sum.gateway.restarts >= 3) add("gateway-restarts", "bug", "Gateway restarted repeatedly", `${sum.gateway.restarts} starts in ${sum.window.hours} h (crash loop?)`);
+  // Deploys and config changes restart it too, so only a high rate counts: 6 or more a day.
+  const perDay = sum.gateway.restarts / Math.max(1, sum.window.hours / 24);
+  if (sum.gateway.restarts >= 3 && perDay >= 6) add("gateway-restarts", "problem", "Gateway restarts often", `${sum.gateway.restarts} starts in ${sum.window.hours} h; check for crashes (deploys and config changes also restart it)`);
   if (sum.gateway.turnsFailed >= 2) add("session-turns-failed", "bug", "Claude Code session turns fail", `${sum.gateway.turnsFailed} failed, ${sum.gateway.turnsOk} ok`);
   if (sum.gateway.runnerRefused >= 3) add("runner-second-instance", "security", "Second runner instance keeps polling", `${sum.gateway.runnerRefused} refusals`);
   if (sum.gateway.loginFailed >= 5) add("login-failures", "security", "Repeated failed sign-ins", `${sum.gateway.loginFailed} failed sign-ins`);

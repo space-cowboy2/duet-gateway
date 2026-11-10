@@ -14,8 +14,10 @@ gateway.log, runner.log, doctor ──▶ health_report ──▶ Monitor (daily
   Turn it on with `"alerts": { "enabled": true, "repo": "space-cowboy2/duet-gateway", "ignore": ["upstream-down:tv", "tool-upstream-down:tv_*"] }`
   in `config.json` and a `github-token` file next to it: a fine-grained token for this repo with Issues read/write only.
   `gateway.log` gets `alert: <fingerprint> filed #n`, `updated #n` or why not. State is kept in `alerts.json`.
-- **Monitor agent** (scheduled Claude task "Monitor agent", daily): the wider look, trends and CI, and fills in the cause on issues.
-- **Fixer agent** (GitHub Actions workflow "Fixer agent"): starts as soon as an issue opened by the owner gets the `monitor` label, plus a daily
+- **Monitor agent** (scheduled Claude task "Monitor agent + morning report", 7:43 am Chicago): the wider look, trends and CI,
+  fills in the cause on issues, then posts a short report of the last day: new issues, what was fixed, what needs Danny.
+  The monitor pass runs on Sonnet.
+- **Fixer agent** (GitHub Actions workflow "Fixer agent", on Sonnet): starts as soon as an issue opened by the owner gets the `monitor` label, plus a daily
   sweep and a manual run (Actions → Fixer agent → Run workflow).
 
 - **Where the data comes from.** Every tool call already writes one line to `gateway.log`: the tool name, the outcome

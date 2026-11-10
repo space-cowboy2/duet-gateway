@@ -83,7 +83,7 @@ git diff main duet/work
 1. In `config.json`, copy the `pc` upstream from `config.example.json` and set `"enabled": true`. Check `command` points at `agent-desktop-win32-x64.exe` on this machine.
 2. Restart the gateway. Until then the tools don't exist.
 3. In claude.ai, open the connector's tool settings and set the act tools to **Needs approval**. They are marked as write tools, so they group together. The read tools (`snapshot`, `screenshot`, `find`, `get`, `is`, `wait`, `list_*`, `status`, `version`, `skills_*`) can stay on Always allow.
-4. `npm run doctor` shows a `desktop control` line: `ok` on, `warn` if `desktop.OFF` exists, `fail` if the exe is missing, the upstream has no `allow` list or `offFile`, or `allow` holds a clipboard, `batch` or notification tool.
+4. `npm run doctor` shows a `desktop control` line: `ok` on, `warn` if `desktop.OFF` exists, `fail` if the exe is missing, the upstream has no `allow` list or `offFile`, or `allow` holds a clipboard, `batch` or notification tool. It also warns about a `screenGuard` left in config.json: the gateway ignores it now, so delete it.
 
 **Refusals.** The gateway refuses a `pc_desktop_*` call that:
 - has an `output_path` argument, which would write a file anywhere as you;
@@ -100,6 +100,8 @@ An agent-desktop upstream without an `allow` list or an `offFile` makes the gate
 - `session_*`, `trace_*`, `skills_path`, `cursor_overlay_*`: housekeeping that writes local files or isn't needed.
 
 **Known limits**
+- Reading takes no approval. With the read tools on Always allow, `screenshot`, `snapshot`, `find` and `get` return whatever is open, work apps included, without a card, while the Egnyte tools ask every time. Set `screenshot` and `snapshot` to **Needs approval** if you want a tap before the screen leaves.
+- What is on screen is also input. With Outlook open, the text of an email reaches Claude through a snapshot, so a booby-trapped email can try to steer the next call.
 - `desktop.OFF` is checked when a call starts; a call already running finishes.
 - The approval tap is the real protection against a booby-trapped email steering Duet. The act tools include `launch` and `type`, so with approval Duet could open PowerShell and type into it as you. Read each card.
 
@@ -124,6 +126,6 @@ To change the bar, edit `REVIEW.md`. The reviewer always judges a PR by the `REV
 ## Notes
 - Health check: `npm run doctor` (or `node gateway.mjs doctor`) prints one `ok`, `warn` or `fail` line per check and exits 1 on any `fail`. It checks config.json, the passphrase, `publicUrl`, `roots`, the `claude` section (command, runner token, workspaces that hold or sit inside your own repos), `egnyteEnabled`, the Egnyte drive, `duet.OFF`, desktop control (the `pc` upstream and `desktop.OFF`), both loopback ports, the `duet-agent-runner` task and the last `runner.log` line. It never prints secrets or file contents. Run it from an elevated prompt to also compare the runner token with `C:\ProgramData\duet-agent\runner-token`.
 - Kill switches: create `duet.OFF` in this folder to refuse new Claude Code turns; create `desktop.OFF` to refuse every `pc_desktop_*` call; `tailscale funnel reset` closes the endpoint; `Stop-ScheduledTask duet-agent-runner` stops the runner.
-- Anything Claude reads through these tools is sent to Anthropic's cloud. Keep work data (Z:\ Egnyte, Vista) out of `roots`; Egnyte is reachable only through the approval-gated Egnyte tools.
+- Anything Claude reads through these tools is sent to Anthropic's cloud. Keep work data (Z:\ Egnyte, Vista) out of `roots`. Egnyte files are reachable through the approval-gated Egnyte tools, and anything open on the desktop (Egnyte, Vista and Outlook included) through `pc_desktop_*` while desktop control is on.
 - Normal and Egnyte sessions share your Claude plan's usage limits.
 - Unverified: whether Duet accepts custom connectors.

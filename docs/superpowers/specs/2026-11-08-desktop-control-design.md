@@ -1,6 +1,11 @@
 # Desktop control for Duet (`pc_desktop_*`)
 
-Date: 2026-11-08. Status: draft for Danny's review.
+Date: 2026-11-08. Status: built in PR #10; the work-app guard was removed in PR #11.
+
+> **Superseded in part by PR #11 (2026-11-09).** The work-app guard described here was removed at Danny's decision.
+> `pc_desktop_*` no longer checks for open work apps, so the goal below that work data never reaches Anthropic no
+> longer holds. The allowlist, `desktop.OFF`, the `output_path` refusal and the startup check remain. The Desktop
+> control section of the README is the current description.
 
 ## Goal
 Duet (and claude.ai) can see and drive Danny's real Windows desktop through the duet-gateway connector: screenshots,

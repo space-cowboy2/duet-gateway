@@ -203,7 +203,7 @@ class Upstream {
     // TV macros take ~25 s and long sequences more; the SDK default is 60 s.
     const run = async () => (await this.get()).callTool({ name, arguments: args }, undefined, { timeout: 200_000 });
     if (!this.offFile) return run();
-    if (fs.existsSync(path.join(this.dir, this.offFile))) throw refused("desktop control is off (desktop.OFF on the PC). Danny has to delete that file to turn it back on.", "desktop.OFF");
+    if (fs.existsSync(path.join(this.dir, this.offFile))) throw refused(`desktop control is off (${this.offFile} on the PC). Danny has to delete that file to turn it back on.`, "desktop.OFF");
     if (Object.hasOwn(args, "output_path")) throw refused("output_path is not allowed: screenshots are returned, never saved on the PC.", "output_path");
     return run();
   }

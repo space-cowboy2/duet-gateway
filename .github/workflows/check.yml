@@ -41,3 +41,4 @@ jobs:
       - run: node doctorcheck.mjs
       - run: node desktopcheck.mjs
       - run: node webcheck.mjs
+      - run: node healthcheck.mjs

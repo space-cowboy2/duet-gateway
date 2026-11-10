@@ -43,7 +43,7 @@ export function makeAlerter({ cfg, dir, logFile, log, fetchFn = globalThis.fetch
     `fingerprint: ${f.fingerprint}`, `severity: ${f.severity}`, "",
     "## What the logs show", `${f.detail} (last ${sum.window.hours} h, ${sum.window.from} to ${sum.window.to})`,
     ...(sum.samples && Object.keys(sum.samples).length ? ["", "Sample lines:", "```", ...Object.values(sum.samples).flat().slice(0, 8), "```"] : []),
-    "", "## Likely cause", "_Filed by the gateway as it happened. The daily monitor or the fixer fills this in._",
+    "", "## Likely cause", "_Filed by the Monitor agent (live alert from the gateway) as it happened. The Fixer agent picks it up._",
   ].join("\n");
 
   // Files a new issue, or comments on the open one it filed before for the same fingerprint.
@@ -53,7 +53,7 @@ export function makeAlerter({ cfg, dir, logFile, log, fetchFn = globalThis.fetch
       const issue = await gh("GET", `/issues/${known.issue}`);
       if (issue.state === "open") {
         if (issue.labels?.some(l => l.name === "wontfix-auto")) return "skipped";
-        await gh("POST", `/issues/${known.issue}/comments`, { body: `Seen again: ${f.detail} (last ${sum.window.hours} h, to ${sum.window.to}).` });
+        await gh("POST", `/issues/${known.issue}/comments`, { body: `Monitor agent: seen again: ${f.detail} (last ${sum.window.hours} h, to ${sum.window.to}).` });
         return `updated #${known.issue}`;
       }
       if (issue.labels?.some(l => l.name === "wontfix-auto")) return "skipped";

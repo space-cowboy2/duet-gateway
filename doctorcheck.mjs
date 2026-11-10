@@ -408,4 +408,13 @@ const run = async (probe, opts = {}) => {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// setup-agent.ps1 lets the installing user read (only read) the runner's logs, so health_report and the doctor can see runner.log.
+{
+  const ps1 = fs.readFileSync(new URL("./setup-agent.ps1", import.meta.url), "utf8");
+  const grants = ps1.split("\n").filter(l => /^icacls "\$Base\\logs" \/grant/.test(l));
+  assert.ok(grants.some(l => /"\*\$\{meSid\}:\(OI\)\(CI\)R"/.test(l)), "the installing user gets read on the runner logs");
+  assert.ok(!grants.some(l => /meSid/.test(l) && /\)(M|F|W)"/.test(l)), "the installing user gets read only on the logs");
+  assert.ok(ps1.indexOf("$meSid =") < ps1.indexOf('"*${meSid}:(OI)(CI)R"'), "meSid is set before it is used");
+}
+
 console.log("doctorcheck: all passed");

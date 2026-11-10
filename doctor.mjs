@@ -2,10 +2,12 @@
 // Prints "ok|warn|fail <check>: <detail>" lines and exits 1 on any fail. It never prints secrets, hashes or file
 // contents: the runner token is compared by hash, and only the last runner.log line (ids and outcomes) is shown.
 // The checks reach the machine only through `probe`, so doctorcheck.mjs can fake it on any OS.
+// Windows and macOS differ in where the runner lives and what keeps it running; `probe.platform` picks the set.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { BROWSER_UNSAFE, everydayFlags, isBrowser, refusedFlags } from "./web.mjs";
@@ -13,6 +15,10 @@ import { BROWSER_UNSAFE, everydayFlags, isBrowser, refusedFlags } from "./web.mj
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const AGENT_DIR = "C:\\ProgramData\\duet-agent"; // where setup-agent.ps1 installs the runner
 export const TASK = "duet-agent-runner";
+export const MAC_AGENT_DIR = "/Library/Application Support/duet-agent"; // where setup-agent-mac.sh installs it
+export const DAEMON = "com.duet-agent.runner";
+export const DAEMON_PLIST = `/Library/LaunchDaemons/${DAEMON}.plist`;
+const AGENT_USER = "duet-agent";
 const POWERSHELL = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 const MAX_LOG_LINE = 200;
 
@@ -40,6 +46,13 @@ exit 0`;
 // The script uses .NET rather than Get-Acl: run from PowerShell 7, Windows PowerShell inherits a PSModulePath whose
 // Microsoft.PowerShell.Security it cannot load. PSModulePath is dropped from its environment for the same reason.
 export const ownerArgs = () => ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(OWNER_PS, "utf16le").toString("base64")];
+
+// Whether `ls -lde` output has an ACL entry that denies `user` both list and search, as setup-agent-mac.sh adds to the
+// home folder. Without search nothing inside the folder can be reached by path.
+export const deniesUser = (acl, user) => String(acl).split("\n").some(l => {
+  const m = /^\s*\d+:\s+user:(\S+)\s+(?:inherited\s+)?deny\s+(\S+)/.exec(l);
+  return m?.[1] === user && ["list", "search"].every(r => m[2].split(",").includes(r));
+});
 
 export function realProbe() {
   return {
@@ -69,7 +82,8 @@ export function realProbe() {
     async mine(paths) {
       if (!paths.length) return [];
       if (process.platform !== "win32") {
-        const uid = process.getuid?.();
+        // Under sudo the repos are still Danny's, so the user who ran sudo is the one to compare.
+        const uid = (process.getuid?.() === 0 && Number(process.env.SUDO_UID)) || process.getuid?.();
         return paths.filter(p => { try { return fs.statSync(p).uid === uid; } catch { return false; } });
       }
       const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toLowerCase() !== "psmodulepath"));
@@ -81,6 +95,17 @@ export function realProbe() {
       const out = await run("schtasks", ["/query", "/tn", name, "/fo", "csv", "/nh"]);
       const row = out?.split(/\r?\n/).find(l => l.trim());
       return row ? row.trim().replace(/^"|"$/g, "").split('","').at(-1) : null;
+    },
+    // macOS. sudo keeps HOME there, so this is Danny's home folder either way.
+    home: () => os.homedir(),
+    // `ls -lde`: the folder's own line, then one line per ACL entry. null if it can't be read.
+    acl: p => run("/bin/ls", ["-lde", p]),
+    // Command lines of the processes `user` is running; null if they can't be listed (no such user). ps rather than
+    // pgrep: only ps may read another user's arguments. -x keeps processes with no terminal (a daemon has none), and
+    // -ww stops ps cutting lines at 79 columns when it has no terminal itself.
+    async commands(user) {
+      const out = await run("ps", ["-x", "-ww", "-U", user, "-o", "command="]);
+      return out === null ? null : out.split("\n").map(l => l.trim()).filter(Boolean);
     },
   };
 }
@@ -97,16 +122,19 @@ function whichCommand(cmd, probe) {
 const findCommand = (cmd, probe) => whichCommand(cmd, probe) !== null;
 
 export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.join(HERE, "config.json"),
-  probe = realProbe(), agentDir = AGENT_DIR } = {}) {
+  probe = realProbe(), agentDir } = {}) {
   const out = [];
   const add = (level, check, detail) => out.push({ level, check, detail });
+  const win = probe.platform === "win32", mac = probe.platform === "darwin";
+  agentDir ??= mac ? MAC_AGENT_DIR : AGENT_DIR;
+  const setup = mac ? "sudo ./setup-agent-mac.sh" : "setup-agent.ps1";
 
   let cfg;
   try { cfg = JSON.parse(probe.readFile(file)); }
   catch (e) {
     // JSON.parse messages quote the config text around the error, so only the position is shown.
     const where = /position \d+( \(line \d+ column \d+\))?/.exec(e.message)?.[0];
-    add("fail", "config", e.code === "ENOENT" ? `${file} not found (copy config.example.json)`
+    add("fail", "config", e.code === "ENOENT" ? `${file} not found (copy ${mac ? "config.example.mac.json" : "config.example.json"})`
       : e instanceof SyntaxError ? `${file} is not valid JSON${where ? ` (${where})` : ""}` : `${file} unreadable (${e.code || "error"})`);
     return out;
   }
@@ -124,10 +152,11 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
   const str = v => typeof v === "string" && v !== "";
   const strs = v => (Array.isArray(v) ? v.filter(str) : []);
   const cc = cfg.claude && typeof cfg.claude === "object" ? cfg.claude : null;
-  const egnyteRoot = str(cc?.egnyteRoot) ? cc.egnyteRoot : "Z:\\";
+  // The Egnyte drive is Z:\ on Windows. Elsewhere there is none unless egnyteRoot names one, and its checks are skipped.
+  const egnyteRoot = str(cc?.egnyteRoot) ? cc.egnyteRoot : win ? "Z:\\" : null;
   // Both spellings of a folder, as written and its real path (a junction or link may point somewhere else).
   const both = p => [...new Set([norm(p), norm(probe.real(p))])];
-  const eg = both(egnyteRoot);
+  const eg = egnyteRoot ? both(egnyteRoot) : [];
   const onEgnyte = p => both(p).some(n => eg.some(e => within(n, e)));
   const deny = strs(cfg.deny).flatMap(both);
   const roots = strs(cfg.roots);
@@ -193,19 +222,19 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
       : /[\\/]WindowsApps[\\/]python[\d.]*\.exe$/i.test(found)
         ? ["warn", check, `${u.command} is the Microsoft Store alias (${found}). Unless Python came from the Store it starts nothing: put the full path to python.exe in config.json`]
       : ["ok", check, `${u.command}${scriptFile ? ` runs ${path.win32.basename(scriptFile)}` : ""}`]));
-    // The TV server only passes calls on to the TV hub, a separate program on this PC.
+    // The TV server only passes calls on to the TV hub, a separate program on this machine.
     if (path.win32.basename(scriptFile || "").toLowerCase() !== "tv_mcp.py") continue;
     let hub = null;
     try { hub = new URL(probe.env.TVREMOTE_HUB_URL || "http://127.0.0.1:8080"); } catch {}
     if (!hub || !["127.0.0.1", "localhost"].includes(hub.hostname)) add("ok", "TV hub", "on another computer, not checked here");
     else add(...(await probe.port(Number(hub.port) || 80) ? ["ok", "TV hub", `127.0.0.1:${hub.port || 80} answers`]
-      : ["warn", "TV hub", `nothing answers on 127.0.0.1:${hub.port || 80}: the TV hub is not running, so every ${u.prefix}_* call fails (tv-remote: deploy\\windows\\install-hub.ps1)`]));
+      : ["warn", "TV hub", `nothing answers on 127.0.0.1:${hub.port || 80}: the TV hub is not running, so every ${u.prefix}_* call fails (tv-remote: ${win ? "deploy\\windows\\install-hub.ps1" : "docs/SETUP.md"})`]));
   }
 
   const port = cfg.port;
-  if (!Number.isInteger(port) || port < 1 || port > 65535) add("fail", "gateway port", "port is not set in config.json (normally 8787)");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) add("fail", "gateway port", `port is not set in config.json (normally ${mac ? 8790 : 8787})`);
   else add(...(await probe.port(port) ? ["ok", "gateway port", `127.0.0.1:${port} answers`]
-    : ["fail", "gateway port", `nothing answers on 127.0.0.1:${port}: start the gateway (npm start)`]));
+    : ["fail", "gateway port", `nothing answers on 127.0.0.1:${port}: start the gateway (${mac ? "./gateway-launchd.sh" : "npm start"})`]));
 
   if (!cc) { add("warn", "claude", "no claude section, so Claude Code sessions are off"); return out; }
 
@@ -213,14 +242,23 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
   else add(...(findCommand(cc.command, probe) ? ["ok", "claude.command", cc.command] : ["fail", "claude.command", `${cc.command} not found`]));
 
   const tokenFile = path.join(agentDir, "runner-token");
-  if (!cc.runnerToken) add("warn", "runnerToken", "not set, so normal sessions are off (run setup-agent.ps1)");
+  if (!cc.runnerToken) add("warn", "runnerToken", `not set, so normal sessions are off (run ${setup})`);
   else {
     let disk = null, missing = false;
     try { disk = probe.readFile(tokenFile).trim(); } catch (e) { missing = e.code === "ENOENT"; }
-    add(...(missing ? ["fail", "runnerToken", `set, but ${tokenFile} is missing: run setup-agent.ps1 again`]
-      : disk === null ? ["ok", "runnerToken", `set (${tokenFile} is not readable here, so not compared; an elevated prompt can)`]
+    add(...(missing ? ["fail", "runnerToken", `set, but ${tokenFile} is missing: run ${setup} again`]
+      : disk === null ? ["ok", "runnerToken", `set (${tokenFile} is not readable here, so not compared; ${mac ? "sudo npm run doctor" : "an elevated prompt"} can)`]
       : sha(disk) === sha(String(cc.runnerToken).trim()) ? ["ok", "runnerToken", `set and matches ${tokenFile}`]
-      : ["fail", "runnerToken", `does not match ${tokenFile}: run setup-agent.ps1 again`]));
+      : ["fail", "runnerToken", `does not match ${tokenFile}: run ${setup} again`]));
+  }
+
+  // macOS puts every local user in staff, which can read most home folders. The deny entry setup-agent-mac.sh adds to
+  // Danny's home folder is what keeps duet-agent out of it, so its loss is a fail.
+  if (mac && cc.runnerToken) {
+    const home = probe.home(), acl = await probe.acl(home);
+    add(...(acl === null ? ["warn", "home folder", `could not read the ACL of ${home}`]
+      : deniesUser(acl, AGENT_USER) ? ["ok", "home folder", `${home} denies ${AGENT_USER}`]
+      : ["fail", "home folder", `${home} has no deny entry for ${AGENT_USER}, so sessions can read it: run ${setup} again`]));
   }
 
   // A repo of Danny's in or above a workspace runs whatever duet-agent writes there (hooks, .vscode, .claude) as Danny.
@@ -248,25 +286,31 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
     if (s.bad) add("fail", check, s.bad);
     else if (mine === null) add("warn", check, `${s.dir} exists; could not check who owns the repos near it`);
     else if (hit(s.inside)) add("fail", check, `${s.dir} holds or is inside your own repo (${path.dirname(hit(s.inside))}); anything duet-agent writes there runs as you`);
-    else if (hit(s.near)) add("fail", check, `${s.dir} is inside ${s.parent}, which holds your own repos; use a folder of its own such as D:\\Duet`);
+    else if (hit(s.near)) add("fail", check, `${s.dir} is inside ${s.parent}, which holds your own repos; use a folder of its own such as ${mac ? "/Users/Shared/Duet" : "D:\\Duet"}`);
     else add("ok", check, `${s.dir} exists, none of your repos in, above or beside it`);
   }
 
-
-  add(...(cc.egnyteEnabled === true ? ["warn", "egnyteEnabled", "on: confirm both Egnyte tools are Needs approval in claude.ai"]
-    : ["ok", "egnyteEnabled", "off"]));
-  add(...(probe.exists(egnyteRoot) ? ["ok", "Egnyte drive", `${egnyteRoot} mounted`]
+  add(...(cc.egnyteEnabled !== true ? ["ok", "egnyteEnabled", "off"]
+    : egnyteRoot ? ["warn", "egnyteEnabled", "on: confirm both Egnyte tools are Needs approval in claude.ai"]
+    : ["warn", "egnyteEnabled", "on, but this machine has no Egnyte drive: set it to false"]));
+  if (egnyteRoot) add(...(probe.exists(egnyteRoot) ? ["ok", "Egnyte drive", `${egnyteRoot} mounted`]
     : [cc.egnyteEnabled === true ? "warn" : "ok", "Egnyte drive", `${egnyteRoot} not mounted${cc.egnyteEnabled === true ? " (sign in to the desktop with Egnyte running)" : ""}`]));
 
   const rport = cc.runnerPort || 8788;
   add(...(await probe.port(rport) ? ["ok", "runner port", `127.0.0.1:${rport} answers`]
     : [cc.runnerToken ? "fail" : "warn", "runner port", `nothing answers on 127.0.0.1:${rport}${cc.runnerToken ? " (the gateway opens it when runnerToken is set)" : ""}`]));
 
-  if (probe.platform === "win32") {
+  if (win) {
     const state = await probe.task(TASK);
     add(...(state === null ? ["warn", "runner task", `${TASK} not found or not visible here (run setup-agent.ps1, or try an elevated prompt)`]
       : /^running$/i.test(state) ? ["ok", "runner task", `${TASK} Running`]
       : ["warn", "runner task", `${TASK} ${state}: Start-ScheduledTask ${TASK}`]));
+  } else if (mac) {
+    // The LaunchDaemon's plist says it is installed; the runner process, run as duet-agent, says it is up.
+    const runner = path.join(agentDir, "bin", "runner.mjs");
+    add(...(!probe.exists(DAEMON_PLIST) ? ["warn", "runner daemon", `${DAEMON} is not installed (run ${setup})`]
+      : (await probe.commands(AGENT_USER))?.some(c => c.endsWith(runner)) ? ["ok", "runner daemon", `${DAEMON} running as ${AGENT_USER}`]
+      : ["warn", "runner daemon", `${DAEMON} is installed but not running: sudo launchctl kickstart -k system/${DAEMON}`]));
   }
 
   const logFile = path.join(agentDir, "logs", "runner.log");

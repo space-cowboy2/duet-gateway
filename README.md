@@ -1,6 +1,6 @@
 # duet-gateway
 
-Remote MCP gateway that lets Claude (claude.ai connectors, Duet) reach tools on a home PC:
+Remote MCP gateway that lets Claude (claude.ai connectors, Duet) reach tools on a home PC or Mac (see [On a Mac](#on-a-mac)):
 - `tv_*`: proxied from the TV remote MCP server
 - `money_*`: a read-only allowlist proxied from the Plaid bridge
 - `pc_desktop_*`: see and drive this PC's desktop (screenshots, clicks, typing, opening apps) through agent-desktop. Off until you set `enabled`
@@ -8,7 +8,7 @@ Remote MCP gateway that lets Claude (claude.ai connectors, Duet) reach tools on 
 - `guide`: how you want work on this PC and online carried out. It returns [PLAYBOOK.md](PLAYBOOK.md), what is switched on right now, and your `notes`
 - `files_list`, `files_read`, `files_search`: read-only, limited to the folders in `roots`
 - `run_command`: only the named commands listed in `commands`, which is empty by default
-- `start_session`, `send_message`, `read_messages`, `list_sessions`, `end_session`: Claude Code sessions with full autonomy, run as a separate Windows user that cannot see Egnyte or your profile
+- `start_session`, `send_message`, `read_messages`, `list_sessions`, `end_session`: Claude Code sessions with full autonomy, run as a separate user (`duet-agent`) that cannot see Egnyte or your profile
 - `start_egnyte_session`, `send_egnyte_message`: Claude Code on the Egnyte drive (Z:\), run as you with no shell, only with your approval tap. Off until you set `egnyteEnabled`
 
 OAuth, single user: Claude signs in with a passphrase stored as a scrypt hash. Tokens are kept hashed in `state.json`.
@@ -60,7 +60,7 @@ Duet ──OAuth──▶ Tailscale Funnel ──▶ gateway.mjs (you, desktop l
 ```bash
 npm install
 cp config.example.json config.json   # edit roots, deny, upstream paths and publicUrl for this machine
-npm run check                        # self-tests (selfcheck.mjs is Windows-only)
+npm run check                        # self-tests
 npm run set-passphrase               # 12+ characters; also revokes existing tokens
 npm start                            # listens on 127.0.0.1:<port>
 tailscale funnel --bg 8787           # public HTTPS at https://<machine>.<tailnet>.ts.net
@@ -168,6 +168,48 @@ A browser upstream without an `allow` list or an `offFile`, or with `--allow-unr
 
 **Kill switch:** create `web.OFF` in this folder. It takes effect on the next call, no restart. Delete it to turn the browser back on. To sign Duet out of everything, delete the `web-profile` folder.
 
+## On a Mac
+The same gateway runs on macOS. There is no Egnyte drive there, so the Egnyte tools stay off; everything else works the same way.
+`config.example.mac.json` is a starting point: it uses ports 8790 and 8791 and publishes on Funnel port 8443, so it does not disturb anything already served on 443.
+
+```bash
+brew install node ripgrep
+npm install
+cp config.example.mac.json config.json   # edit roots, deny, machineName and publicUrl
+npm run check                            # all five test files run on macOS
+npm run set-passphrase
+./gateway-launchd.sh                     # LaunchAgent com.duet-gateway: starts at login, restarts if it stops
+tailscale funnel --bg --https=8443 http://127.0.0.1:8790
+```
+Then add `https://<machine>.<tailnet>.ts.net:8443/mcp` as a custom connector in claude.ai, as on Windows.
+
+Two config keys matter more on a Mac. `machineName` is the name the sign-in page, the tool descriptions and Duet use for this machine. `rgPath` is the full path to ripgrep, for when `rg` is not on the gateway's PATH; the LaunchAgent's PATH already includes `/opt/homebrew/bin` and `/usr/local/bin`, so a Homebrew install needs nothing.
+
+Claude Code sessions, one time:
+```bash
+claude setup-token          # sign in; it prints a token that starts with sk-ant-
+sudo ./setup-agent-mac.sh   # paste the token when asked (or pass --claude-token-file <file>)
+```
+`setup-agent-mac.sh` is the Mac version of `setup-agent.ps1`:
+- It creates `duet-agent`, a hidden standard user with its own group and no password, and copies `runner.mjs`, `claude.mjs` and the `claude` binary to `/Library/Application Support/duet-agent`.
+- It gives the user the workspace `/Users/Shared/Duet` (change with `--workspace`).
+- macOS puts every local user in `staff`, which can read most home folders. So the script adds an ACL entry to your home folder that denies `duet-agent` every right, including traversal. That keeps it away from `config.json`, `~/.ssh`, `~/.claude` and every repo in your home folder.
+- It starts the runner with the LaunchDaemon `com.duet-agent.runner`, which runs at boot as `duet-agent` whether or not you are signed in.
+- Before the runner starts, a probe runs as `duet-agent`. It must be able to write in each workspace, and must fail to list your home folder, read `config.json`, `~/.ssh` or `~/.claude`, or create files in `/opt/homebrew`, `/usr/local` and `/Applications`. If any check goes the wrong way, setup stops and the runner stays off.
+- Run it again to update the runner or Claude Code. `--new-claude-token` replaces the sign-in token. `--uninstall` removes the daemon, the ACL entry, the user, its group and the install folder.
+
+Kill switches on a Mac: `duet.OFF` in this folder, `tailscale funnel --https=8443 off`, and `sudo launchctl bootout system/com.duet-agent.runner`.
+
+`npm run doctor` knows the Mac layout. It looks for the runner token and `runner.log` in `/Library/Application Support/duet-agent`, and in place of the Windows task and the Egnyte drive it checks two things:
+- `runner daemon`: the `com.duet-agent.runner` LaunchDaemon is installed and `duet-agent` is running `runner.mjs`.
+- `home folder`: your home folder still has the ACL entry that denies `duet-agent` list and search. It is a `fail` if the entry is gone, because then nothing keeps sessions out of your home folder; run `sudo ./setup-agent-mac.sh` again.
+
+The runner token file is readable only by root and `duet-agent`, so a plain run reports the token as set but not compared. `sudo npm run doctor` compares it.
+
+Desktop control (`pc_desktop_*`) and the web browser (`web_*`) have not been tried on a Mac. `config.example.mac.json` has neither upstream, and `npm run enable-web` and `npm run web-login` are written for Windows paths and Microsoft Edge.
+
+Duet is told which machine it is on: the instructions start with `machineName`, and the session line describes a separate macOS user. The `guide` tool returns the same `PLAYBOOK.md`, which is written for the PC, so on a Mac the status under it starts with a line that names the Mac and says to read "PC" and "Windows" as this machine.
+
 ## Pull request review
 Every PR into `main` runs `.github/workflows/pr-review.yml`:
 - **Tests**: `npm run check` on a Windows runner.
@@ -184,19 +226,19 @@ To change the bar, edit `REVIEW.md`. The reviewer always judges a PR by the `REV
 ## TV and bank tools: when a server does not start
 `tv_*` and `money_*` come from two programs the gateway starts itself (the `tv` and `money` upstreams in `config.json`). A program that does not start lists no tools, so the whole group is missing in claude.ai. The gateway says why, in three places:
 
-- **`guide`**, under "On this PC right now": `- TV (tv_*): on, 24 tools`, or `- TV (tv_*): not answering (command not found: python). Its tools are missing until that is fixed on the PC`. A server that was down is asked again each time `guide` is called, so a fix shows without a restart.
+- **`guide`**, under "On this PC right now": `- TV (tv_*): on, 24 tools`, or `- TV (tv_*): not answering (command not found: python). Its tools are missing until that is fixed on the PC`. A server that was down is asked again each time `guide` is called, so a fix shows without a restart. On a Mac the same lines say Mac.
 - **`gateway.log`**: one line each time a server's state changes, such as `upstream tv up, 24 tools` or `upstream tv unavailable: python started and exited at once (wrong script path, or it crashed)`. The line has the program's file name and a fixed reason, never a path or the program's output. The gateway starts every server once at startup, so the log shows the state right away.
 - **`npm run doctor`**: an `upstream tv` and an `upstream money` line (`fail` when the command or its script is not found; `warn` when `python` is only the Microsoft Store alias), and a `TV hub` line.
 
 The reasons: `command not found` (not on the gateway's PATH: use the full path in `command`), `started and exited at once` (the script path in `args` is wrong, or the program crashed), `started but did not answer in 15 s`. A server that hangs is given up on after that time, so it does not hold up the tool list for the others.
 
-The TV server (`tv_mcp.py` from [tv-remote](https://github.com/space-cowboy2/tv-remote)) only passes calls on to the TV hub, a second program that talks to the TV and has to be running on this PC (`127.0.0.1:8080`). In the tv-remote folder, `deploy\windows\install-hub.ps1` installs it and starts it at every logon; `tvremote pair` pairs it with the TV. With the server up and the hub down, the `tv_*` tools are listed and each call answers `hub_unreachable`.
+The TV server (`tv_mcp.py` from [tv-remote](https://github.com/space-cowboy2/tv-remote)) only passes calls on to the TV hub, a second program that talks to the TV and has to be running on this PC (`127.0.0.1:8080`). In the tv-remote folder, `deploy\windows\install-hub.ps1` installs it and starts it at every logon (on a Mac, see that project's `docs/SETUP.md`); `tvremote pair` pairs it with the TV. With the server up and the hub down, the `tv_*` tools are listed and each call answers `hub_unreachable`.
 
 ## Not in git (per machine)
-`config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `duet.OFF`, `desktop.OFF`, `web.OFF`. The web browser's profile and downloads live outside this folder, in `%LOCALAPPDATA%\duet-gateway`.
+`config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `gateway.out` (Mac LaunchAgent output), `duet.OFF`, `desktop.OFF`, `web.OFF`. The web browser's profile and downloads live outside this folder, in `%LOCALAPPDATA%\duet-gateway`.
 
 ## Notes
-- Health check: `npm run doctor` (or `node gateway.mjs doctor`) prints one `ok`, `warn` or `fail` line per check and exits 1 on any `fail`. It checks config.json, the passphrase, `publicUrl`, `roots`, the `claude` section (command, runner token, workspaces that hold or sit inside your own repos), `egnyteEnabled`, the Egnyte drive, `duet.OFF`, desktop control (the `pc` upstream and `desktop.OFF`), the web browser (the `web` upstream and `web.OFF`), the other upstreams (the command and script of `tv` and `money`, and whether the TV hub answers), both loopback ports, the `duet-agent-runner` task and the last `runner.log` line. It never prints secrets or file contents. Run it from an elevated prompt to also compare the runner token with `C:\ProgramData\duet-agent\runner-token`.
+- Health check: `npm run doctor` (or `node gateway.mjs doctor`) prints one `ok`, `warn` or `fail` line per check and exits 1 on any `fail`. It checks config.json, the passphrase, `publicUrl`, `roots`, the `claude` section (command, runner token, workspaces that hold or sit inside your own repos), `egnyteEnabled`, the Egnyte drive, `duet.OFF`, desktop control (the `pc` upstream and `desktop.OFF`), the web browser (the `web` upstream and `web.OFF`), the other upstreams (the command and script of `tv` and `money`, and whether the TV hub answers), both loopback ports, the `duet-agent-runner` task and the last `runner.log` line. It never prints secrets or file contents. Run it from an elevated prompt to also compare the runner token with `C:\ProgramData\duet-agent\runner-token`. On a Mac it checks the runner's LaunchDaemon and your home folder's ACL instead of the task and the Egnyte drive; see [On a Mac](#on-a-mac).
 - Kill switches: create `duet.OFF` in this folder to refuse new Claude Code turns; create `desktop.OFF` to refuse every `pc_desktop_*` call; create `web.OFF` to refuse every `web_*` call; `tailscale funnel reset` closes the endpoint; `Stop-ScheduledTask duet-agent-runner` stops the runner.
 - Anything Claude reads through these tools is sent to Anthropic's cloud. Keep work data (Z:\ Egnyte, Vista) out of `roots`. Egnyte files are reachable through the approval-gated Egnyte tools, and anything open on the desktop (Egnyte, Vista and Outlook included) through `pc_desktop_*` while desktop control is on. The web browser reaches a work site only if you sign its profile in to one, so don't.
 - Normal and Egnyte sessions share your Claude plan's usage limits.

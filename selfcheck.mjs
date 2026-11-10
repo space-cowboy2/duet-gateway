@@ -18,14 +18,17 @@ fs.writeFileSync(path.join(root, ".env"), "SECRET=1");
 fs.writeFileSync(path.join(root, "blocked", "x.txt"), "blocked text");
 fs.writeFileSync(path.join(root, "bin.dat"), Buffer.from([1, 0, 2]));
 fs.writeFileSync(path.join(outside, "secret.txt"), "nope");
-assert.equal(spawnSync("cmd.exe", ["/c", "mklink", "/J", path.join(root, "jump"), outside]).status, 0, "junction");
+const WIN = process.platform === "win32";
+// A link out of the root: a junction on Windows, a symlink elsewhere. The guard must follow it and refuse.
+if (WIN) assert.equal(spawnSync("cmd.exe", ["/c", "mklink", "/J", path.join(root, "jump"), outside]).status, 0, "junction");
+else fs.symlinkSync(outside, path.join(root, "jump"));
 
 const PASS = "correct horse battery staple";
 const port = await new Promise(r => { const s = net.createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
 const cfg = {
   port, publicUrl: `http://127.0.0.1:${port}`, passphraseHash: hashPassphrase(PASS),
   roots: [root], deny: [path.join(root, "blocked")], denyNames: [".env", "*.key"],
-  commands: { hi: "Write-Output hi" }, upstreams: [], stateFile: path.join(tmp, "state.json"),
+  commands: { hi: WIN ? "Write-Output hi" : "echo hi" }, upstreams: [], stateFile: path.join(tmp, "state.json"),
   redirectOrigins: ["http://127.0.0.1:1"],
 };
 setLogFile(path.join(tmp, "gateway.log"));
@@ -40,7 +43,7 @@ try {
   const g = makeGuard(cfg);
   assert.ok(g.check(path.join(root, "sub", "hello.txt")));
   for (const bad of [path.join(root, "..", "outside", "secret.txt"), path.join(root, "jump", "secret.txt"), path.join(root, ".env"),
-    path.join(root, "blocked", "x.txt"), "C:\\Windows\\win.ini", "Z:\\", "", "sub\\hello.txt",
+    path.join(root, "blocked", "x.txt"), "C:\\Windows\\win.ini", "Z:\\", "", "sub\\hello.txt", "sub/hello.txt", "/etc/hosts", "/",
     "\\\\127.0.0.1\\c$\\x", "//127.0.0.1/c$/x", "\\\\?\\" + path.join(root, "sub", "hello.txt")]) assert.throws(() => g.check(bad), /not allowed|required/, `allowed: ${bad}`);
   // The same folders by their real path (on CI the temp dir is a short name like RUNNER~1): roots still work, deny still holds.
   const realRoot = fs.realpathSync.native(root);
@@ -50,12 +53,17 @@ try {
   // tools
   const ctx = makeContext(cfg);
   const text = r => r.content[0].text;
+  // Off Windows the instructions describe the Mac and leave out tools this machine doesn't have.
+  if (!WIN) assert.ok(/always-on Mac/.test(ctx.instructions()) && !/Egnyte|money_/.test(ctx.instructions()), ctx.instructions());
   assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "guide", "run_command"]);
+  // The guide's playbook is written for the PC, so off Windows the status names this machine first.
+  if (!WIN) assert.match(text(await ctx.callTool("guide", {})),
+    /## On this Mac right now\n\n- This machine: Danny's Mac, a Mac\. Where this guide says PC or Windows, read this Mac\. A session here is a separate macOS user\.\n- Desktop control: not set up on this Mac\n/);
   assert.equal(text(await ctx.callTool("files_read", { path: path.join(root, "sub", "hello.txt") })), "hello world");
   assert.ok((await ctx.callTool("files_read", { path: path.join(root, "jump", "secret.txt") })).isError);
   assert.ok((await ctx.callTool("files_read", { path: path.join(root, "bin.dat") })).isError);
   const listing = text(await ctx.callTool("files_list", { path: root }));
-  assert.ok(listing.includes("sub\\") && !listing.includes(".env"), listing);
+  assert.ok(listing.includes("sub" + path.sep) && !listing.includes(".env"), listing);
   const found = text(await ctx.callTool("files_search", { pattern: "hello|SECRET|nope|blocked" }));
   assert.ok(found.includes("hello world"), found);
   assert.ok(!/SECRET|nope|blocked text/.test(found), found);

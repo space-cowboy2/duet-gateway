@@ -11,6 +11,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-desk-"));
 const logFile = path.join(tmp, "gateway.log");
 setLogFile(logFile);
 const baseCfg = { roots: [tmp], upstreams: [], stateFile: path.join(tmp, "state.json") };
+// The gateway names its machine: "PC" on Windows, "Mac" elsewhere (Linux CI included).
+const PC = process.platform === "win32" ? "PC" : "Mac";
 
 // Fake agent-desktop. Logs each call name to FAKE_CALLS.
 // It lives in the temp folder, so the SDK is imported by absolute file URL.
@@ -146,13 +148,13 @@ try {
   let listed = (await gone.listTools()).map(t => t.name);
   assert.ok(listed.includes("pc_desktop_screenshot") && listed.includes("guide") && !listed.some(n => n.startsWith("tv_")), listed.join());
   let g = await guideOf(gone);
-  assert.match(g, /^- TV \(tv_\*\): not answering \(command not found: no-such-python\)\. Its tools are missing until that is fixed on the PC$/m);
+  assert.match(g, new RegExp(`^- TV \\(tv_\\*\\): not answering \\(command not found: no-such-python\\)\\. Its tools are missing until that is fixed on the ${PC}$`, "m"));
   assert.match(g, /^- Desktop control \(pc_desktop_\*\): on$/m);
-  assert.match(g, /^- Bank balances: not set up on this PC$/m);
+  assert.match(g, new RegExp(`^- Bank balances: not set up on this ${PC}$`, "m"));
   assert.match(g, /^## TV notes \(`tv_\*`\)$/m);
   const downCall = await gone.callTool("tv_play", { query: "jazz" });
   assert.equal(downCall.isError, true);
-  assert.equal(downCall.content[0].text, "The tv_* tools are not answering on the PC (command not found: no-such-python). Nothing was sent.");
+  assert.equal(downCall.content[0].text, `The tv_* tools are not answering on the ${PC} (command not found: no-such-python). Nothing was sent.`);
 
   // Exits at once (a wrong script path does the same), and never answers: both are reported, the second within the time limit.
   setUpstreamStartMs(400);
@@ -185,7 +187,7 @@ try {
   assert.match(await guideOf(warmed), /^- TV \(tv_\*\): on, 2 tools$/m);
 
   // An upstream that is switched off in config.json is named as that, not as missing.
-  assert.match(await guideOf(make({ prefix: "tv", enabled: false, command: "x" })), /^- TV: switched off in config\.json on the PC\n- Bank balances: not set up on this PC$/m);
+  assert.match(await guideOf(make({ prefix: "tv", enabled: false, command: "x" })), new RegExp(`^- TV: switched off in config\\.json on the ${PC}\\n- Bank balances: not set up on this ${PC}$`, "m"));
 
   // gateway.log: one line per change of state, in fixed wording, with the program's file name and never its folder.
   const upLog = fs.readFileSync(logFile, "utf8").split("\n").filter(l => / upstream /.test(l)).map(l => l.replace(/^\S+ /, ""));

@@ -175,7 +175,7 @@ const run = async (probe, opts = {}) => {
   ({ by } = await pcRun({ ...pc, enabled: false })); assert.deepEqual([by("desktop control").level, by("desktop control").detail], ["ok", "off"]);
   ({ by } = await pcRun(pc, { exe: false })); assert.equal(by("desktop control").level, "fail"); assert.match(by("desktop control").detail, /agent-desktop not found at .*agent-desktop.exe/);
   ({ by } = await pcRun(pc, { off: true })); assert.equal(by("desktop control").level, "warn"); assert.match(by("desktop control").detail, /desktop.OFF/);
-  ({ by } = await pcRun(pc)); assert.equal(by("desktop control").level, "ok"); assert.match(by("desktop control").detail, /Needs approval/);
+  ({ by } = await pcRun(pc)); assert.equal(by("desktop control").level, "ok"); assert.match(by("desktop control").detail, /^on; claude\.ai decides whether act tools ask first/);
   // No `enabled` key: the gateway runs it, so the doctor must not say "off".
   ({ by } = await pcRun({ ...pc, enabled: undefined })); assert.match(by("desktop control").detail, /^on/);
   // Enabled without an allowlist or off switch: fail before anything else (the exe exists here, so only this check can fail it).
@@ -267,6 +267,36 @@ const run = async (probe, opts = {}) => {
     { dirs: [B, P("gw"), P("docs"), P("bin"), P("home"), P("Projects"), P("Projects", "app"), P("Projects", "app", ".git"), P("Projects", "scratch")],
       mine: [P("Projects", "app", ".git")] })));
   assert.match(by("workspace w").detail, /such as \/Users\/Shared\/Duet$/);
+}
+
+// 5d. The web browser: the `web` upstream (Playwright MCP).
+{
+  const NODE = P("bin", "node.exe"), CLI = P("gw", "node_modules", "@playwright", "mcp", "cli.js"), same = (a, b) => path.resolve(a) === path.resolve(b);
+  const webRun = (web, { node = true, cli = true, off = false } = {}) => {
+    const p = healthy(web && { upstreams: [web] }), has = p.exists;
+    p.exists = x => (node && same(x, NODE)) || (cli && same(x, CLI)) || (off && same(x, P("gw", off))) || has(x);
+    return run(p);
+  };
+  const web = { prefix: "web", enabled: true, command: NODE, args: [CLI, "--browser", "msedge"], allow: ["browser_snapshot"], offFile: "web.OFF" };
+  const line = async (...a) => { const w = (await webRun(...a)).by("web browser"); return [w.level, w.detail]; };
+  assert.deepEqual(await line(undefined), ["ok", "off"]);
+  assert.deepEqual(await line({ ...web, enabled: false, allow: undefined }), ["ok", "off"]);
+  assert.deepEqual(await line(web), ["ok", "on, with its own profile"]);
+  // Recognised by "kind" too, and running unless enabled is false.
+  assert.deepEqual(await line({ ...web, enabled: undefined, kind: "browser", args: [] }), ["ok", "on, with its own profile"]);
+  for (const bad of [{ allow: undefined }, { offFile: undefined }, { offFile: "" }])
+    assert.match((await line({ ...web, ...bad })).join(" "), /^fail web upstream has no allowlist or offFile/);
+  for (const flag of ["--allow-unrestricted-file-access", "--config=x.json"])
+    assert.deepEqual(await line({ ...web, args: [...web.args, flag] }), ["fail", `web upstream may not use ${flag.split("=")[0]}`]);
+  assert.deepEqual(await line({ ...web, allow: ["browser_snapshot", "browser_evaluate", "browser_file_upload"] }),
+    ["fail", "web allowlist includes browser_evaluate, browser_file_upload"]);
+  assert.match((await line(web, { node: false })).join(" "), /^fail .*node\.exe not found$/);
+  assert.match((await line(web, { cli: false })).join(" "), /^fail Playwright MCP not found at .*cli\.js: run npm install$/);
+  assert.deepEqual(await line(web, { off: "web.OFF" }), ["warn", "switched off (web.OFF)"]);
+  assert.match((await line({ ...web, args: [...web.args, "--extension"] })).join(" "), /^warn on, attached to your everyday browser \(--extension\)/);
+  // The desktop line is not confused by the browser, and the other way round.
+  const both = await webRun(web);
+  assert.deepEqual([both.by("desktop control").level, both.by("desktop control").detail], ["ok", "off"]);
 }
 
 // 6. Exit code.

@@ -10,6 +10,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { BROWSER_UNSAFE, everydayFlags, isBrowser, refusedFlags } from "./web.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const AGENT_DIR = "C:\\ProgramData\\duet-agent"; // where setup-agent.ps1 installs the runner
@@ -183,10 +184,26 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
     : !probe.exists(String(pc.command)) ? ["fail", "desktop control", `agent-desktop not found at ${pc.command}`]
     // The same file the gateway checks: offFile next to config.json.
     : probe.exists(path.join(path.dirname(file), pc.offFile)) ? ["warn", "desktop control", `switched off (${pc.offFile})`]
-    : ["ok", "desktop control", "on; turn on Needs approval for act tools in claude.ai"]));
+    : ["ok", "desktop control", "on; claude.ai decides whether act tools ask first (README: Approvals)"]));
   // The work-app guard is gone, so a screenGuard left in config.json does nothing. Say so instead of letting it look active.
   const stale = (Array.isArray(cfg.upstreams) ? cfg.upstreams : []).filter(u => u?.screenGuard !== undefined).map(u => String(u.prefix));
   if (stale.length) add("warn", "screenGuard", `ignored on ${stale.join(", ")}: the work-app guard was removed, so open work apps are not blocked. Delete it from config.json`);
+
+  // The web browser (Playwright MCP): the same startup rules as the gateway, plus what only the doctor can see.
+  const web = (Array.isArray(cfg.upstreams) ? cfg.upstreams : []).find(u => u && isBrowser(u));
+  const webUnsafe = Array.isArray(web?.allow) ? web.allow.filter(n => BROWSER_UNSAFE.includes(n)) : [];
+  const script = strs(web?.args).find(a => /\.[cm]?js$/i.test(a));
+  add(...(!web || web.enabled === false ? ["ok", "web browser", "off"]
+    : !Array.isArray(web.allow) || !str(web.offFile)
+      ? ["fail", "web browser", `${web.prefix} upstream has no allowlist or offFile (see config.example.json)`]
+    : refusedFlags(web.args).length ? ["fail", "web browser", `${web.prefix} upstream may not use ${refusedFlags(web.args).join(", ")}`]
+    : webUnsafe.length ? ["fail", "web browser", `${web.prefix} allowlist includes ${webUnsafe.join(", ")}`]
+    : !findCommand(String(web.command), probe) ? ["fail", "web browser", `${web.command} not found`]
+    : script && !probe.exists(script) ? ["fail", "web browser", `Playwright MCP not found at ${script}: run npm install`]
+    : probe.exists(path.join(path.dirname(file), web.offFile)) ? ["warn", "web browser", `switched off (${web.offFile})`]
+    : everydayFlags(web.args).length
+      ? ["warn", "web browser", `on, attached to your everyday browser (${everydayFlags(web.args).join(", ")}): every sign-in in it is in reach, work ones too`]
+    : ["ok", "web browser", "on, with its own profile"]));
 
   const port = cfg.port;
   if (!Number.isInteger(port) || port < 1 || port > 65535) add("fail", "gateway port", `port is not set in config.json (normally ${mac ? 8790 : 8787})`);

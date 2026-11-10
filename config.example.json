@@ -31,6 +31,7 @@
     ".remember"
   ],
   "commands": {},
+  "notes": [],
   "upstreams": [
     {
       "prefix": "tv",
@@ -122,6 +123,52 @@
         "desktop_skills_get"
       ],
       "offFile": "desktop.OFF"
+    },
+    {
+      "prefix": "web",
+      "enabled": false,
+      "kind": "browser",
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\trand\\duet-gateway\\node_modules\\@playwright\\mcp\\cli.js",
+        "--browser",
+        "msedge",
+        "--snapshot-mode",
+        "none",
+        "--idle-timeout",
+        "600000",
+        "--user-data-dir",
+        "C:\\Users\\trand\\AppData\\Local\\duet-gateway\\web-profile",
+        "--output-dir",
+        "C:\\Users\\trand\\AppData\\Local\\duet-gateway\\web-files"
+      ],
+      "allow": [
+        "browser_snapshot",
+        "browser_find",
+        "browser_take_screenshot",
+        "browser_wait_for",
+        "browser_navigate",
+        "browser_navigate_back",
+        "browser_tabs",
+        "browser_click",
+        "browser_hover",
+        "browser_drag",
+        "browser_type",
+        "browser_fill_form",
+        "browser_select_option",
+        "browser_press_key",
+        "browser_handle_dialog",
+        "browser_resize",
+        "browser_close"
+      ],
+      "readOnly": [
+        "browser_snapshot",
+        "browser_find",
+        "browser_take_screenshot",
+        "browser_wait_for"
+      ],
+      "offFile": "web.OFF",
+      "localHosts": []
     }
   ],
   "claude": {

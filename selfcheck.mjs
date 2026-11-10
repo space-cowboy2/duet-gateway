@@ -55,7 +55,10 @@ try {
   const text = r => r.content[0].text;
   // Off Windows the instructions describe the Mac and leave out tools this machine doesn't have.
   if (!WIN) assert.ok(/always-on Mac/.test(ctx.instructions()) && !/Egnyte|money_/.test(ctx.instructions()), ctx.instructions());
-  assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "run_command"]);
+  assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "guide", "run_command"]);
+  // The guide's playbook is written for the PC, so off Windows the status names this machine first.
+  if (!WIN) assert.match(text(await ctx.callTool("guide", {})),
+    /## On this Mac right now\n\n- This machine: Danny's Mac, a Mac\. Where this guide says PC or Windows, read this Mac\. A session here is a separate macOS user\.\n- Desktop control: not set up on this Mac\n/);
   assert.equal(text(await ctx.callTool("files_read", { path: path.join(root, "sub", "hello.txt") })), "hello world");
   assert.ok((await ctx.callTool("files_read", { path: path.join(root, "jump", "secret.txt") })).isError);
   assert.ok((await ctx.callTool("files_read", { path: path.join(root, "bin.dat") })).isError);

@@ -15,6 +15,7 @@ const gatewayLog = [
   `${at(280)} tool money_get_balances upstream down 3ms`,
   ...Array.from({ length: 4 }, (_, i) => `${at(270 - i)} tool files_read error 12ms`),
   ...Array.from({ length: 6 }, (_, i) => `${at(260 - i)} tool files_read ok ${10 + i}ms`),
+  ...["TIMEOUT", "TIMEOUT", "AMBIGUOUS_TARGET"].map((c, i) => `${at(255 - i)} tool pc_desktop_launch error ${c} 20000ms`),
   `${at(250)} tool pc_desktop_click refused: desktop.OFF 1ms`,
   ...Array.from({ length: 3 }, (_, i) => `${at(240 - i)} tool web_browser_navigate ok 45000ms`),
   `${at(230)} mcp request failed: ENOENT C:\\Users\\trand\\secret\\x.json`,
@@ -60,11 +61,15 @@ for (const bad of ["trand", "100.64.1.2", "127.0.0.1", "sk-ant", "AAAAAAAA"]) as
 assert.equal(scrub("C:\\Users\\trand\\x and /Users/danny/y"), "~\\x and ~/y");
 assert(scrub("x".repeat(500)).length <= 201);
 
+assert.deepEqual(sum.tools.pc_desktop_launch.errorCodes, { TIMEOUT: 2, AMBIGUOUS_TARGET: 1 });
+assert.equal(sum.tools.pc_desktop_launch.error, 3);
+assert.equal(sum.tools.files_read.error, 4, "an error with no code still counts");
 const f = findings(sum, [{ level: "fail", check: "runner port", detail: "nothing answers" }, { level: "ok", check: "config", detail: "x" }]);
 const fps = f.map(x => x.fingerprint);
 for (const fp of ["tool-errors:files_read", "tool-upstream-down:money_get_balances", "tool-slow:web_browser_navigate",
   "upstream-down:money", "session-turns-failed", "runner-not-delivered", "doctor:runner port"])
   assert(fps.includes(fp), `missing finding ${fp}`);
+assert(f.find(x => x.fingerprint === "tool-errors:pc_desktop_launch").detail.includes("TIMEOUT ×2"), "finding names the codes");
 assert(fps.some(x => x.startsWith("mcp-error:")));
 assert(fps.some(x => x.startsWith("log-error:something exploded")), "repeated unknown errors group into one finding");
 assert(!fps.includes("tool-slow:read_messages"), "long-poll waits are not slowness");

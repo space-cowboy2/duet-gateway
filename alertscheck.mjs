@@ -30,12 +30,16 @@ const fetchFn = async (url, opts) => {
   throw new Error("unhandled");
 };
 const logged = [];
-const cfg = { alerts: { repo: "me/gw", ignore: ["upstream-down:tv", "tool-upstream-down:tv_*"] } };
+const cfg = { alerts: { enabled: true, repo: "me/gw", ignore: ["upstream-down:tv", "tool-upstream-down:tv_*"] } };
 const make = (over = {}) => makeAlerter({ cfg, dir, logFile, log: m => logged.push(m), fetchFn, now, debounceMs: 10, ...over });
 
 // No alerts config, or a bad repo: no alerter.
 assert.equal(makeAlerter({ cfg: {}, dir, logFile, log() {} }), null);
-assert.equal(makeAlerter({ cfg: { alerts: { repo: "x; rm" } }, dir, logFile, log() {} }), null);
+assert.equal(makeAlerter({ cfg: { alerts: { enabled: true, repo: "x; rm" } }, dir, logFile, log() {} }), null);
+// The shipped example is off, so copying it never files issues.
+const example = JSON.parse(fs.readFileSync(new URL("./config.example.json", import.meta.url), "utf8"));
+assert.equal(example.alerts.enabled, false);
+assert.equal(makeAlerter({ cfg: example, dir, logFile, log() {} }), null);
 
 const errors = n => Array.from({ length: n }, (_, i) => `${at(10 - i * 0.1)} tool files_read error 5ms`);
 write([...errors(4), `${at(5)} upstream tv unavailable: timed out`, `${at(4)} tool tv_power upstream down 1ms`]);

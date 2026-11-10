@@ -2,7 +2,7 @@
 // After a log line that looks like trouble, it waits a little (so a burst becomes one check), sums up the last hour of
 // gateway.log with health.mjs, and files or updates one issue per finding fingerprint. The fixer task picks the issues
 // up. See MONITOR.md.
-// Config (config.json): "alerts": { "repo": "owner/name", "tokenFile": "github-token", "ignore": ["upstream-down:tv"] }
+// Config (config.json): "alerts": { "enabled": true, "repo": "owner/name", "tokenFile": "github-token", "ignore": ["upstream-down:tv"] }
 // The token is a fine-grained GitHub token for that repo with Issues read/write only. It is read when an issue is
 // filed, never logged, and sent only to api.github.com.
 import fs from "node:fs";
@@ -18,7 +18,7 @@ const LABELS = { bug: "bug", perf: "enhancement", problem: "bug", security: "bug
 export function makeAlerter({ cfg, dir, logFile, log, fetchFn = globalThis.fetch, now = Date.now,
   debounceMs = 30_000, windowHours = 1, repeatMs = 6 * 3600_000, maxPerHour = 5 }) {
   const a = cfg.alerts;
-  if (!a || typeof a !== "object" || !/^[\w.-]+\/[\w.-]+$/.test(a.repo || "")) return null;
+  if (!a || typeof a !== "object" || a.enabled !== true || !/^[\w.-]+\/[\w.-]+$/.test(a.repo || "")) return null;
   const tokenFile = path.resolve(dir, a.tokenFile || "github-token");
   const stateFile = path.join(dir, "alerts.json");
   const ignore = (Array.isArray(a.ignore) ? a.ignore : []).filter(s => typeof s === "string").map(globRe);

@@ -65,7 +65,7 @@ jobs:
             - Check the issue first with `gh issue view`. If it is closed, already has one of those labels, or
               an open PR already says it fixes it, stop.
             - Branch `fix/<issue>-<slug>`, fix with a test, run `node healthcheck.mjs`, `node alertscheck.mjs`,
-              `npm run check:sessions`, `node doctorcheck.mjs`, `node desktopcheck.mjs` and `node webcheck.mjs`
+              `node sessioncheck.mjs`, `node doctorcheck.mjs`, `node desktopcheck.mjs` and `node webcheck.mjs`
               (selfcheck needs Windows; the PR's Tests job runs it). Push with `git push -u origin <branch>`.
             - Open the PR with `gh pr create --draft`, title starting "Fixer agent: ", body starting "Fixes #<issue>"
               and ending "_Opened by the Fixer agent._". Then
@@ -76,4 +76,4 @@ jobs:
             outside MONITOR.md's limits (weaker security, merging, touching secrets), add `needs-danny` and say why.
           claude_args: |
             --max-turns 80
-            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm ci),Bash(npm run check:sessions),Bash(node:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout -b fix/:*),Bash(git switch -c fix/:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin fix/:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh pr list:*),Bash(gh pr create --draft:*)"
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm ci),Bash(npm run check:sessions),Bash(node healthcheck.mjs),Bash(node alertscheck.mjs),Bash(node doctorcheck.mjs),Bash(node desktopcheck.mjs),Bash(node webcheck.mjs),Bash(node sessioncheck.mjs),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout -b fix/:*),Bash(git switch -c fix/:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin fix/:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh pr list:*),Bash(gh pr create --draft:*)"

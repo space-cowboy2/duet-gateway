@@ -11,7 +11,7 @@ gateway.log, runner.log, doctor ──▶ health_report ──▶ Monitor (daily
 
 - **Alerts** (`alerts.mjs`): after a log line that looks like trouble, the gateway waits 30 s, sums up the last hour
   and files or comments on one issue per finding. At most 5 issues an hour, and one update per finding every 6 hours.
-  Turn it on with `"alerts": { "repo": "space-cowboy2/duet-gateway", "ignore": ["upstream-down:tv", "tool-upstream-down:tv_*"] }`
+  Turn it on with `"alerts": { "enabled": true, "repo": "space-cowboy2/duet-gateway", "ignore": ["upstream-down:tv", "tool-upstream-down:tv_*"] }`
   in `config.json` and a `github-token` file next to it: a fine-grained token for this repo with Issues read/write only.
   `gateway.log` gets `alert: <fingerprint> filed #n`, `updated #n` or why not. State is kept in `alerts.json`.
 - **Monitor agent** (scheduled Claude task "Monitor agent", daily): the wider look, trends and CI, and fills in the cause on issues.

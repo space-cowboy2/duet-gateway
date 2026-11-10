@@ -7,3 +7,5 @@ duet.OFF
 gateway.out
 desktop.OFF
 web.OFF
+github-token
+alerts.json

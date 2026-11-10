@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { makeSessions } from "./sessions.mjs";
 import { AGENT_DIR, MAC_AGENT_DIR, diagnose } from "./doctor.mjs";
 import { findings, scrub, summarize, tail } from "./health.mjs";
+import { makeAlerter } from "./alerts.mjs";
 import { isBrowser, profileDir, refusedFlags, webUpstream, webUrlProblem } from "./web.mjs";
 
 const VERSION = "1.3.0";
@@ -81,11 +82,14 @@ function mark(res) {
 
 let logFile = path.join(HERE, "gateway.log");
 export const setLogFile = f => { logFile = f; };
+// Set by makeContext when config.json has "alerts": sees every line, to file a GitHub issue when something goes wrong.
+let logHook = null;
 // Tool name and outcome only: never arguments, file contents or amounts.
 const log = msg => {
   const line = `${new Date().toISOString()} ${msg}`;
   console.log(line);
   try { fs.appendFileSync(logFile, line + "\n"); } catch {}
+  try { logHook?.(msg); } catch {}
 };
 const now = () => Math.floor(Date.now() / 1000);
 const sha = s => createHash("sha256").update(s).digest("hex");
@@ -325,6 +329,8 @@ export function makeContext(cfg) {
   const sessions = cfg.claude ? makeSessions(cfg, log) : null;
   if (sessions) Object.assign(local, sessions.tools);
   const dir = path.dirname(cfg.stateFile);
+  const alerter = makeAlerter({ cfg, dir, logFile, log });
+  if (alerter) logHook = alerter.onLog;
   const ups = (cfg.upstreams || []).filter(s => s.enabled !== false).map(s => new Upstream(s, dir));
   const egnyte = Object.hasOwn(local, "start_egnyte_session");
   // Asks the given upstreams for their tools. One that does not answer is left out, and gateway.log gets one line

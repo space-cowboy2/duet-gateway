@@ -1,13 +1,22 @@
 # Monitor and fixer
 
-Two scheduled Claude tasks keep the gateway improving. GitHub issues are the queue between them, and nothing merges
-without Danny.
+Three parts keep the gateway improving. GitHub issues are the queue between them, and nothing merges without Danny.
 
 ```
-gateway.log, runner.log, doctor ──▶ health_report tool ──▶ Monitor (daily) ──▶ GitHub issues labelled "monitor"
-                                                                                     │
-                                         Danny reviews and merges ◀── draft PR ◀── Fixer (daily, one issue)
+gateway.log ──▶ alerts.mjs (in the gateway, seconds after a problem) ──┐
+gateway.log, runner.log, doctor ──▶ health_report ──▶ Monitor (daily) ─┴─▶ GitHub issue labelled "monitor"
+                                                                              │ (issues event)
+                                    Danny reviews and merges ◀── draft PR ◀── Fixer (.github/workflows/fixer.yml)
 ```
+
+- **Alerts** (`alerts.mjs`): after a log line that looks like trouble, the gateway waits 30 s, sums up the last hour
+  and files or comments on one issue per finding. At most 5 issues an hour, and one update per finding every 6 hours.
+  Turn it on with `"alerts": { "repo": "space-cowboy2/duet-gateway", "ignore": ["upstream-down:tv", "tool-upstream-down:tv_*"] }`
+  in `config.json` and a `github-token` file next to it: a fine-grained token for this repo with Issues read/write only.
+  `gateway.log` gets `alert: <fingerprint> filed #n`, `updated #n` or why not. State is kept in `alerts.json`.
+- **Monitor** (scheduled Claude task, daily): the wider look, trends and CI, and fills in the cause on issues.
+- **Fixer** (GitHub Actions): starts as soon as an issue opened by the owner gets the `monitor` label, plus a daily
+  sweep and a manual run (Actions → Fixer → Run workflow).
 
 - **Where the data comes from.** Every tool call already writes one line to `gateway.log`: the tool name, the outcome
   (ok, error, refused, upstream down) and how long it took. Upstream outages, restarts, sign-in failures and Claude Code
@@ -16,8 +25,8 @@ gateway.log, runner.log, doctor ──▶ health_report tool ──▶ Monitor (
   findings, each with a stable fingerprint. It blanks user folders, IP addresses and anything token-shaped.
 - **The tasks read this file on every run.** To change how they work, edit this file in a PR.
 
-Both tasks run in the cloud. The monitor needs the duet-gateway connector (to call `health_report`) and GitHub; the
-fixer needs GitHub only.
+The monitor runs in the cloud and needs the duet-gateway connector (to call `health_report`) and GitHub. The fixer runs
+in GitHub Actions with the same Claude secret as the PR review.
 
 ## Labels
 
@@ -90,4 +99,5 @@ and add `needs-danny` instead.
 
 ## Turning them off
 
-Pause or delete the scheduled tasks at claude.ai/code (Scheduled), or add `wontfix-auto` to a single issue.
+Monitor: pause it at claude.ai/code (Scheduled). Alerts: remove `alerts` from `config.json` or delete `github-token`.
+Fixer: disable the Fixer workflow in GitHub Actions. One issue: add `wontfix-auto`.

@@ -1,6 +1,6 @@
 // sessions.mjs: Claude Code sessions for Duet.
-// - Normal sessions (full autonomy) are run by runner.mjs as a separate Windows user that cannot see
-//   Z:\ (Egnyte) or Danny's profile. The runner asks for work on a loopback-only port.
+// - Normal sessions (full autonomy) are run by runner.mjs as a separate user ("duet-agent", on Windows or macOS)
+//   that cannot see Z:\ (Egnyte) or Danny's profile. The runner asks for work on a loopback-only port.
 // - Egnyte sessions run here, as Danny, in his desktop logon where Z:\ is mounted. Their two tools
 //   are meant to be set to "Needs approval" in claude.ai, so each call needs Danny's tap.
 import { randomBytes, randomUUID, timingSafeEqual, createHash } from "node:crypto";
@@ -36,8 +36,13 @@ export function egnyteFlags(mode, root = "Z:\\") {
   return ["--permission-mode", "dontAsk", "--strict-mcp-config", "--allowedTools", ...allow, "--disallowedTools", ...deny, ...fileDeny];
 }
 
+const WIN = process.platform === "win32";
+const MACHINE = cfg => cfg.machineName || (WIN ? "Danny's PC" : "Danny's Mac");
+
 export function makeSessions(cfg, log) {
   const cc = cfg.claude || {};
+  const machine = MACHINE(cfg), here = WIN ? "the PC" : "the Mac";
+  const setupScript = WIN ? "setup-agent.ps1" : "setup-agent-mac.sh";
   const file = path.join(path.dirname(cfg.stateFile), "sessions.json");
   const offFile = path.join(path.dirname(cfg.stateFile), "duet.OFF");
   const workspaces = cc.workspaces || {};
@@ -73,7 +78,7 @@ export function makeSessions(cfg, log) {
   }
 
   const off = () => fs.existsSync(offFile);
-  const OFF_MSG = "Claude Code sessions are switched off on the PC (duet.OFF). Danny has to delete that file to turn them back on.";
+  const OFF_MSG = `Claude Code sessions are switched off on ${here} (duet.OFF). Danny has to delete that file to turn them back on.`;
 
   // ---- turns ----
   const localQueue = [], localRunning = new Map(); // session id -> child process
@@ -147,7 +152,7 @@ export function makeSessions(cfg, log) {
   }
   function pin(instance) {
     if (typeof instance !== "string" || !/^[\w-]{8,64}$/.test(instance))
-      return refuse("runner: request without an instance id refused (an old runner.mjs? re-run setup-agent.ps1)");
+      return refuse(`runner: request without an instance id refused (an old runner.mjs? re-run ${setupScript})`);
     if (instance !== runnerInstance) {
       if (runnerInstance && Math.max(runnerSeen, restartedAt) >= now() - lostAfter) return refuse("runner: second instance refused");
       log("runner: new instance");
@@ -261,7 +266,7 @@ export function makeSessions(cfg, log) {
 
   const tools = {
     start_session: {
-      description: "Start a Claude Code session on Danny's PC with full autonomy: it can edit files, run commands and use git in its workspace, without asking. It runs as a separate Windows user that cannot see Egnyte (work files) or Danny's private folders. Each message is one turn and the session remembers earlier turns. Returns the answer if it finishes within wait_seconds; otherwise call read_messages later.",
+      description: `Start a Claude Code session on ${machine} with full autonomy: it can edit files, run commands and use git in its workspace, without asking. ${WIN ? "It runs as a separate Windows user that cannot see Egnyte (work files) or Danny's private folders." : "It runs as a separate macOS user that cannot see Danny's home folder."} Each message is one turn and the session remembers earlier turns. Returns the answer if it finishes within wait_seconds; otherwise call read_messages later.`,
       inputSchema: obj({
         prompt: { type: "string", description: "What Claude Code should do" },
         workspace: { type: "string", enum: names.length ? names : undefined, description: `Folder to work in: ${names.map(n => `${n} = ${workspaces[n]}`).join(", ")}. Default ${names[0]}.` },
@@ -269,7 +274,7 @@ export function makeSessions(cfg, log) {
         wait_seconds: waitProp,
       }, ["prompt"]),
       run: a => {
-        if (!cc.runnerToken) throw new Error("Normal sessions are not set up on the PC yet (run setup-agent.ps1).");
+        if (!cc.runnerToken) throw new Error(`Normal sessions are not set up on ${here} yet (run ${setupScript}).`);
         const workspace = a.workspace || names[0];
         if (!Object.hasOwn(workspaces, workspace)) throw new Error(`unknown workspace: ${workspace}`);
         return answer(create("agent", { ...a, workspace }), a.wait_seconds ?? 30);
@@ -296,7 +301,7 @@ export function makeSessions(cfg, log) {
       },
     },
     list_sessions: {
-      description: "List Claude Code sessions on Danny's PC, and whether the PC's runner and kill switch are on.",
+      description: `List Claude Code sessions on ${machine}, and whether its runner and kill switch are on.`,
       inputSchema: obj({}),
       run: () => ({
         sessions: Object.values(db.sessions).sort((a, b) => b.updated - a.updated).slice(0, 30).map(view),

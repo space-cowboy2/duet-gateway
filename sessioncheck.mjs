@@ -112,7 +112,7 @@ try {
   assert.equal(await conflicts(ctx), c0 + 3);
   let logText = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8");
   assert.match(logText, /runner: second instance refused/);
-  assert.match(logText, /runner: request without an instance id refused .*setup-agent\.ps1/);
+  assert.match(logText, /runner: request without an instance id refused .*setup-agent(\.ps1|-mac\.sh)/);
   r = await call(ctx, "send_message", { session_id: sid, text: "still served", wait_seconds: 15 });
   assert.match(r.replies[0].text, /prompt=still served/, "the real runner keeps working");
 

@@ -1,12 +1,12 @@
 # duet-gateway
 
-Remote MCP gateway that lets Claude (claude.ai connectors, Duet) reach tools on a home PC:
+Remote MCP gateway that lets Claude (claude.ai connectors, Duet) reach tools on a home PC or Mac (see [On a Mac](#on-a-mac)):
 - `tv_*`: proxied from the TV remote MCP server
 - `money_*`: a read-only allowlist proxied from the Plaid bridge
 - `pc_desktop_*`: see and drive this PC's desktop (screenshots, clicks, typing, opening apps) through agent-desktop. Off until you set `enabled`
 - `files_list`, `files_read`, `files_search`: read-only, limited to the folders in `roots`
 - `run_command`: only the named commands listed in `commands`, which is empty by default
-- `start_session`, `send_message`, `read_messages`, `list_sessions`, `end_session`: Claude Code sessions with full autonomy, run as a separate Windows user that cannot see Egnyte or your profile
+- `start_session`, `send_message`, `read_messages`, `list_sessions`, `end_session`: Claude Code sessions with full autonomy, run as a separate user (`duet-agent`) that cannot see Egnyte or your profile
 - `start_egnyte_session`, `send_egnyte_message`: Claude Code on the Egnyte drive (Z:\), run as you with no shell, only with your approval tap. Off until you set `egnyteEnabled`
 
 OAuth, single user: Claude signs in with a passphrase stored as a scrypt hash. Tokens are kept hashed in `state.json`.
@@ -105,6 +105,36 @@ An agent-desktop upstream without an `allow` list or an `offFile` makes the gate
 
 **Kill switch:** create `desktop.OFF` in this folder. It takes effect on the next call, no restart (a call already running finishes). Delete it to turn desktop control back on.
 
+## On a Mac
+The same gateway runs on macOS. There is no Egnyte drive there, so the Egnyte tools stay off; everything else works the same way.
+`config.example.mac.json` is a starting point: it uses ports 8790 and 8791 and publishes on Funnel port 8443, so it does not disturb anything already served on 443.
+
+```bash
+brew install node ripgrep
+npm install
+cp config.example.mac.json config.json   # edit roots, deny, machineName and publicUrl
+npm run check                            # selfcheck, sessioncheck and doctorcheck all run on macOS
+npm run set-passphrase
+./gateway-launchd.sh                     # LaunchAgent com.duet-gateway: starts at login, restarts if it stops
+tailscale funnel --bg --https=8443 http://127.0.0.1:8790
+```
+Then add `https://<machine>.<tailnet>.ts.net:8443/mcp` as a custom connector in claude.ai, as on Windows.
+
+Claude Code sessions, one time:
+```bash
+claude setup-token          # sign in; it prints a token that starts with sk-ant-
+sudo ./setup-agent-mac.sh   # paste the token when asked (or pass --claude-token-file <file>)
+```
+`setup-agent-mac.sh` is the Mac version of `setup-agent.ps1`:
+- It creates `duet-agent`, a hidden standard user with its own group and no password, and copies `runner.mjs`, `claude.mjs` and the `claude` binary to `/Library/Application Support/duet-agent`.
+- It gives the user the workspace `/Users/Shared/Duet` (change with `--workspace`).
+- macOS puts every local user in `staff`, which can read most home folders. So the script adds an ACL entry to your home folder that denies `duet-agent` every right, including traversal. That keeps it away from `config.json`, `~/.ssh`, `~/.claude` and every repo in your home folder.
+- It starts the runner with the LaunchDaemon `com.duet-agent.runner`, which runs at boot as `duet-agent` whether or not you are signed in.
+- Before the runner starts, a probe runs as `duet-agent`. It must be able to write in each workspace, and must fail to list your home folder, read `config.json`, `~/.ssh` or `~/.claude`, or create files in `/opt/homebrew`, `/usr/local` and `/Applications`. If any check goes the wrong way, setup stops and the runner stays off.
+- Run it again to update the runner or Claude Code. `--new-claude-token` replaces the sign-in token. `--uninstall` removes the daemon, the ACL entry, the user, its group and the install folder.
+
+Kill switches on a Mac: `duet.OFF` in this folder, `tailscale funnel --https=8443 off`, and `sudo launchctl bootout system/com.duet-agent.runner`.
+
 ## Pull request review
 Every PR into `main` runs `.github/workflows/pr-review.yml`:
 - **Tests**: `npm run check` on a Windows runner.
@@ -119,7 +149,7 @@ The review action refuses to run when a PR changes `pr-review.yml` itself (the f
 To change the bar, edit `REVIEW.md`. The reviewer always judges a PR by the `REVIEW.md` on `main`, so a PR can't lower the bar for itself.
 
 ## Not in git (per machine)
-`config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `duet.OFF`, `desktop.OFF`.
+`config.json` (passphrase hash, runner token, local paths), `state.json` (tokens), `sessions.json`, `gateway.log`, `gateway.out` (Mac LaunchAgent output), `duet.OFF`, `desktop.OFF`.
 
 ## Notes
 - Health check: `npm run doctor` (or `node gateway.mjs doctor`) prints one `ok`, `warn` or `fail` line per check and exits 1 on any `fail`. It checks config.json, the passphrase, `publicUrl`, `roots`, the `claude` section (command, runner token, workspaces that hold or sit inside your own repos), `egnyteEnabled`, the Egnyte drive, `duet.OFF`, desktop control (the `pc` upstream and `desktop.OFF`), both loopback ports, the `duet-agent-runner` task and the last `runner.log` line. It never prints secrets or file contents. Run it from an elevated prompt to also compare the runner token with `C:\ProgramData\duet-agent\runner-token`.

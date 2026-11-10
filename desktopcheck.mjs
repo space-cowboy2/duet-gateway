@@ -5,7 +5,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { makeContext, setLogFile, setUpstreamStartMs } from "./gateway.mjs";
+import { errorCode, makeContext, setLogFile, setUpstreamStartMs } from "./gateway.mjs";
+
+// A failed upstream call is logged with its error code only (never the message), and only if it is a plain code.
+const errRes = text => ({ isError: true, content: [{ type: "text", text }] });
+assert.equal(errorCode(errRes('{"error":{"code":"TIMEOUT","message":"waited for C:\\\\Users\\\\x"}}')), "TIMEOUT");
+assert.equal(errorCode(errRes('{"code":"AMBIGUOUS_TARGET"}')), "AMBIGUOUS_TARGET");
+for (const bad of ["plain text failure", '{"error":{"code":"sk-ant-secret value"}}', '{"error":{"code":"lower"}}', '{"error":{"code":7}}', "{"])
+  assert.equal(errorCode(errRes(bad)), null, bad);
+assert.equal(errorCode({ isError: true }), null);
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-desk-"));
 const logFile = path.join(tmp, "gateway.log");

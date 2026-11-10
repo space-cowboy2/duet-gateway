@@ -152,8 +152,12 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
       ? ["fail", "desktop control", "pc upstream has no allowlist or offFile (see config.example.json)"]
     : unsafe.length ? ["fail", "desktop control", `pc allowlist includes ${unsafe.join(", ")}`]
     : !probe.exists(String(pc.command)) ? ["fail", "desktop control", `agent-desktop not found at ${pc.command}`]
-    : probe.exists(path.join(path.dirname(file), "desktop.OFF")) ? ["warn", "desktop control", "switched off (desktop.OFF)"]
+    // The same file the gateway checks: offFile next to config.json.
+    : probe.exists(path.join(path.dirname(file), pc.offFile)) ? ["warn", "desktop control", `switched off (${pc.offFile})`]
     : ["ok", "desktop control", "on; turn on Needs approval for act tools in claude.ai"]));
+  // The work-app guard is gone, so a screenGuard left in config.json does nothing. Say so instead of letting it look active.
+  const stale = (Array.isArray(cfg.upstreams) ? cfg.upstreams : []).filter(u => u?.screenGuard !== undefined).map(u => String(u.prefix));
+  if (stale.length) add("warn", "screenGuard", `ignored on ${stale.join(", ")}: the work-app guard was removed, so open work apps are not blocked. Delete it from config.json`);
 
   const port = cfg.port;
   if (!Number.isInteger(port) || port < 1 || port > 65535) add("fail", "gateway port", "port is not set in config.json (normally 8787)");

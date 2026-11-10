@@ -233,10 +233,14 @@ class Upstream {
     this.connecting ??= (async () => {
       const client = new Client({ name: "duet-gateway", version: VERSION });
       client.onclose = () => { if (this.client === client) this.client = null; };
+      // On Windows a missing program is first seen as a child that exits: the spawn error (ENOENT) arrives through
+      // onerror, and connect() itself only fails with "connection closed". The spawn error is the better reason.
+      let spawnErr = null;
+      client.onerror = e => { if (["ENOENT", "EACCES", "EPERM"].includes(e?.code)) spawnErr ??= e; };
       try {
         await client.connect(new StdioClientTransport({ command: this.command, args: this.args, env: process.env, stderr: "ignore" }), { timeout: upStartMs });
       } catch (e) {
-        this.down = whyDown(e, this.command);
+        this.down = whyDown(spawnErr || e, this.command);
         this.count = null;
         client.close().catch(() => {});
         throw e;

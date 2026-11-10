@@ -58,6 +58,15 @@ export function makeAlerter({ cfg, dir, logFile, log, fetchFn = globalThis.fetch
       }
       if (issue.labels?.some(l => l.name === "wontfix-auto")) return "skipped";
     }
+    // An open issue the Monitor agent (or an earlier alerts.json) filed for the same fingerprint: update that one.
+    const open = await gh("GET", "/issues?state=open&labels=monitor&per_page=100");
+    const same = open.find(i => !i.pull_request && String(i.body || "").split(/\r?\n/).some(l => l.trim() === `fingerprint: ${f.fingerprint}`));
+    if (same) {
+      state.fp[f.fingerprint] = { ...state.fp[f.fingerprint], issue: same.number };
+      if (same.labels?.some(l => l.name === "wontfix-auto")) return "skipped";
+      await gh("POST", `/issues/${same.number}/comments`, { body: `Monitor agent: seen again: ${f.detail} (last ${sum.window.hours} h, to ${sum.window.to}).` });
+      return `updated #${same.number}`;
+    }
     const issue = await gh("POST", "/issues", { title: f.title, body: bodyOf(f, sum), labels: ["monitor", LABELS[f.severity] || "bug"] });
     state.fp[f.fingerprint] = { ...state.fp[f.fingerprint], issue: issue.number };
     return `filed #${issue.number}`;

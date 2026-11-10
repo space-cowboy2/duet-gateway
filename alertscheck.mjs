@@ -25,6 +25,7 @@ const fetchFn = async (url, opts) => {
   assert(m, `unexpected url ${url}`);
   const body = opts.body && JSON.parse(opts.body);
   if (opts.method === "POST" && !m[1]) { const n = next++; issues.set(n, { ...body, number: n, state: "open", labels: body.labels.map(name => ({ name })) }); return { ok: true, status: 201, json: async () => issues.get(n) }; }
+  if (opts.method === "GET" && !m[1]) return { ok: true, status: 200, json: async () => [...issues.values()].filter(i => i.state === "open") };
   if (opts.method === "GET") return { ok: true, status: 200, json: async () => issues.get(+m[1]) };
   if (opts.method === "POST" && m[2]) return { ok: true, status: 201, json: async () => ({}) };
   throw new Error("unhandled");
@@ -89,6 +90,15 @@ calls.length = 0; issues.get(2).labels.push({ name: "wontfix-auto" });
 t += 7 * 3600_000; write(errors(5));
 await make().check();
 assert(!calls.some(c => c.method === "POST"));
+
+// An open issue someone else filed (the Monitor agent) with the same fingerprint gets a comment, not a twin.
+fs.rmSync(path.join(dir, "alerts.json"));
+calls.length = 0; issues.clear(); next = 50;
+issues.set(7, { number: 7, state: "open", labels: [{ name: "monitor" }], title: "x", body: "fingerprint: tool-errors:files_read\nseverity: bug" });
+t += 7 * 3600_000; write(errors(5));
+await make().check();
+assert.equal(issues.size, 1, "no duplicate issue");
+assert(calls.some(c => c.method === "POST" && c.url.endsWith("/issues/7/comments")));
 
 // Hourly cap.
 fs.rmSync(path.join(dir, "alerts.json"));

@@ -239,6 +239,14 @@ const run = async (probe, opts = {}) => {
   assert.match((await runMac(noRead)).by("runnerToken").detail, /not readable here.*sudo npm run doctor can/);
   assert.match((await runMac(fakeProbe({ platform: "darwin" }))).r[0].detail, /copy config\.example\.mac\.json/);
 
+  // A TV upstream on a Mac is checked the same way, and a stopped hub points at the TV project's setup notes, not a .ps1.
+  const tvMac = mac({ upstreams: [{ prefix: "tv", command: P("bin", "python3"), args: [P("tv", "tv_mcp.py")] }] });
+  tvMac.exists = (f => x => [P("bin", "python3"), P("tv", "tv_mcp.py")].some(h => path.resolve(x) === path.resolve(h)) || f(x))(tvMac.exists);
+  ({ text, by } = await runMac(tvMac));
+  assert.equal(by("upstream tv").level, "ok", text);
+  assert.equal(by("TV hub").level, "warn"); assert.match(by("TV hub").detail, /docs\/SETUP\.md\)$/);
+  assert.doesNotMatch(text, /\.ps1/);
+
   // The runner: not installed, installed but down, and another duet-agent process that only mentions runner.mjs.
   const noPlist = mac(); noPlist.exists = (f => x => path.resolve(x) !== path.resolve(DAEMON_PLIST) && f(x))(noPlist.exists);
   assert.deepEqual([(await runMac(noPlist)).by("runner daemon").level, (await runMac(noPlist)).by("runner daemon").detail],
@@ -297,6 +305,41 @@ const run = async (probe, opts = {}) => {
   // The desktop line is not confused by the browser, and the other way round.
   const both = await webRun(web);
   assert.deepEqual([both.by("desktop control").level, both.by("desktop control").detail], ["ok", "off"]);
+}
+
+// 5e. The other upstreams (tv, money): the program and its script must be there, and the TV hub must answer.
+{
+  const PY = P("py", "python.exe"), TV = P("tv", "server", "tv_mcp.py"), STORE = path.join(B, "WindowsApps", "python.exe");
+  const same = (a, b) => path.resolve(a) === path.resolve(b);
+  const upRun = (upstreams, { has = [PY, TV], ports = [8787, 8788, 8080], env = {} } = {}) => {
+    const p = healthy({ upstreams }, { ports, env }), base = p.exists;
+    p.exists = x => has.some(h => same(x, h)) || base(x);
+    return run(p);
+  };
+  const tv = { prefix: "tv", command: PY, args: [TV] };
+  const line = async (check, ...a) => { const l = (await upRun(...a)).by(check); return [l.level, l.detail]; };
+  assert.deepEqual(await line("upstream tv", [tv]), ["ok", `${PY} runs tv_mcp.py`]);
+  assert.deepEqual(await line("TV hub", [tv]), ["ok", "127.0.0.1:8080 answers"]);
+  assert.deepEqual(await line("upstream tv", [{ ...tv, enabled: false }], { has: [] }), ["ok", "off"]);
+  assert.deepEqual(await line("upstream tv", [tv], { has: [TV] }), ["fail", `${PY} not found, so the tv_* tools are missing`]);
+  assert.deepEqual(await line("upstream tv", [tv], { has: [PY] }), ["fail", `${TV} not found, so the tv_* tools are missing`]);
+  assert.deepEqual(await line("upstream tv", [{ prefix: "tv", args: [TV] }]), ["fail", "no command in config.json"]);
+  // A bare name is looked up on PATH; the Store's python alias is called out, because by itself it starts nothing.
+  assert.deepEqual(await line("upstream tv", [{ ...tv, command: "python" }], { env: { PATH: P("py"), PATHEXT: ".com;.exe" } }), ["ok", "python runs tv_mcp.py"]);
+  assert.equal((await line("upstream tv", [{ ...tv, command: "python" }], { env: { PATH: P("nowhere") } }))[0], "fail");
+  const store = await line("upstream tv", [{ ...tv, command: "python" }], { has: [STORE, TV], env: { PATH: path.dirname(STORE), PATHEXT: ".com;.exe" } });
+  assert.equal(store[0], "warn"); assert.match(store[1], /Microsoft Store alias .*put the full path to python\.exe in config\.json$/);
+  // The hub: a stopped one is a warning that says what it breaks; one on another computer is not checked; only the TV server has one.
+  const hubDown = await line("TV hub", [tv], { ports: [8787, 8788] });
+  assert.equal(hubDown[0], "warn"); assert.match(hubDown[1], /^nothing answers on 127\.0\.0\.1:8080: the TV hub is not running, so every tv_\* call fails \(tv-remote: deploy\\windows\\install-hub\.ps1\)$/);
+  assert.deepEqual(await line("TV hub", [tv], { ports: [8787, 8788, 9000], env: { TVREMOTE_HUB_URL: "http://127.0.0.1:9000" } }), ["ok", "127.0.0.1:9000 answers"]);
+  assert.deepEqual(await line("TV hub", [tv], { ports: [], env: { TVREMOTE_HUB_URL: "http://192.168.1.50:8080" } }), ["ok", "on another computer, not checked here"]);
+  const money = await upRun([{ prefix: "money", command: PY, args: [P("gone", "server.mjs")], allow: ["status"] }]);
+  assert.deepEqual(money.fails, ["upstream money"]);
+  assert.ok(!money.r.some(x => x.check === "TV hub"));
+  // The desktop and the browser keep their own lines and get no second one.
+  const mixed = await upRun([tv, { prefix: "pc", enabled: false, command: "x" }, { prefix: "web", enabled: false, kind: "browser", command: "x" }]);
+  assert.deepEqual(mixed.r.filter(x => x.check.startsWith("upstream ")).map(x => x.check), ["upstream tv"]);
 }
 
 // 6. Exit code.

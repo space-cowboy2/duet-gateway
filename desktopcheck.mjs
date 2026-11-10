@@ -1,15 +1,18 @@
 // Desktop-control check: the off switch, output_path refusal, allowlist, upstream enabled flag and readOnly annotations,
-// with a fake agent-desktop (a real stdio MCP server in a child process). Run: node desktopcheck.mjs
+// with a fake agent-desktop (a real stdio MCP server in a child process). Then upstream health: a server that is
+// missing, crashes or hangs is reported with its reason and does not take the others with it. Run: node desktopcheck.mjs
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { makeContext, setLogFile } from "./gateway.mjs";
+import { makeContext, setLogFile, setUpstreamStartMs } from "./gateway.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-desk-"));
 const logFile = path.join(tmp, "gateway.log");
 setLogFile(logFile);
 const baseCfg = { roots: [tmp], upstreams: [], stateFile: path.join(tmp, "state.json") };
+// The gateway names its machine: "PC" on Windows, "Mac" elsewhere (Linux CI included).
+const PC = process.platform === "win32" ? "PC" : "Mac";
 
 // Fake agent-desktop. Logs each call name to FAKE_CALLS.
 // It lives in the temp folder, so the SDK is imported by absolute file URL.
@@ -152,6 +155,73 @@ try {
     assert.match(logged, new RegExp(`tool pc_desktop_screenshot refused: ${kind} \\d+ms`), kind);
   assert.match(ctx.instructions(), /pc_desktop_\*/);
   assert.doesNotMatch(tv.instructions(), /pc_desktop_/);
+
+  // ---- upstream health ----
+  // A fake TV server with instructions of its own, and three broken ones: no such program, exits at once, never answers.
+  const fakeTv = path.join(tmp, "fake-tv.mjs");
+  fs.writeFileSync(fakeTv, fs.readFileSync(fakePath, "utf8")
+    .replace('{ capabilities: { tools: {} } }', '{ capabilities: { tools: {} }, instructions: "FAKE TV INSTRUCTIONS" }')
+    .replace(/\["desktop_list_windows"[^\]]*\]/, '["play", "get_guide"]'));
+  assert.match(fs.readFileSync(fakeTv, "utf8"), /tools: \["play", "get_guide"\]/, "the fake TV server was not derived from the fake desktop");
+  const crash = path.join(tmp, "crash.mjs"), hang = path.join(tmp, "hang.mjs"), late = path.join(tmp, "late.mjs");
+  fs.writeFileSync(crash, "process.exit(3);");
+  fs.writeFileSync(hang, "setInterval(() => {}, 1000);");
+  const guideOf = async c => (await c.callTool("guide", {})).content[0].text;
+  const node = path.basename(process.execPath).replace(/\./g, "\\.");
+  const make = (...upstreams) => { const c = makeContext({ ...baseCfg, upstreams }); ctxs.push(c); return c; };
+
+  // No such program: the other upstream still lists, the guide and a call both give the reason, and nothing is thrown.
+  const gone = make({ prefix: "tv", command: path.join(tmp, "no-such-python"), args: [fakeTv] }, pc);
+  let listed = (await gone.listTools()).map(t => t.name);
+  assert.ok(listed.includes("pc_desktop_screenshot") && listed.includes("guide") && !listed.some(n => n.startsWith("tv_")), listed.join());
+  let g = await guideOf(gone);
+  assert.match(g, new RegExp(`^- TV \\(tv_\\*\\): not answering \\(command not found: no-such-python\\)\\. Its tools are missing until that is fixed on the ${PC}$`, "m"));
+  assert.match(g, /^- Desktop control \(pc_desktop_\*\): on$/m);
+  assert.match(g, new RegExp(`^- Bank balances: not set up on this ${PC}$`, "m"));
+  assert.match(g, /^## TV notes \(`tv_\*`\)$/m);
+  const downCall = await gone.callTool("tv_play", { query: "jazz" });
+  assert.equal(downCall.isError, true);
+  assert.equal(downCall.content[0].text, `The tv_* tools are not answering on the ${PC} (command not found: no-such-python). Nothing was sent.`);
+
+  // Exits at once (a wrong script path does the same), and never answers: both are reported, the second within the time limit.
+  setUpstreamStartMs(400);
+  const broken = make({ prefix: "money", command: process.execPath, args: [crash] }, { prefix: "tv", command: process.execPath, args: [hang] },
+    { prefix: "pc", command: process.execPath, args: [crash], allow: names, offFile: "desktop.OFF" });
+  const t0 = Date.now();
+  assert.deepEqual((await broken.listTools()).map(t => t.name).filter(n => /^(tv|money|pc)_/.test(n)), []);
+  assert.ok(Date.now() - t0 < 5000, "a hung upstream held the tool list");
+  g = await guideOf(broken);
+  assert.match(g, new RegExp(`^- Bank balances \\(money_\\*\\): not answering \\(${node} started and exited at once \\(wrong script path, or it crashed\\)\\)\\.`, "m"));
+  assert.match(g, new RegExp(`^- TV \\(tv_\\*\\): not answering \\(${node} started but did not answer in 0\\.4 s\\)\\.`, "m"));
+  assert.match(g, new RegExp(`^- Desktop control \\(pc_desktop_\\*\\): on, but not answering \\(${node} started and exited at once`, "m"));
+  setUpstreamStartMs(15_000);
+
+  // A server that was down is asked again by the guide, so a fix on the PC shows without restarting the gateway.
+  const healed = make({ prefix: "tv", command: process.execPath, args: [late] });
+  assert.match(await guideOf(healed), /^- TV \(tv_\*\): set up, not started yet$/m);
+  assert.equal((await healed.listTools()).filter(t => t.name.startsWith("tv_")).length, 0);
+  assert.match(await guideOf(healed), /^- TV \(tv_\*\): not answering/m);
+  fs.copyFileSync(fakeTv, late);
+  assert.match(await guideOf(healed), /^- TV \(tv_\*\): on, 2 tools$/m);
+  assert.deepEqual((await healed.listTools()).map(t => t.name).filter(n => n.startsWith("tv_")), ["tv_play", "tv_get_guide"]);
+
+  // warm() starts the upstreams, so the first conversation already has a server's own instructions.
+  const warmed = make({ prefix: "tv", command: process.execPath, args: [fakeTv] });
+  assert.match(warmed.instructions(), /tv_get_guide before the first TV request\. If no tv_\* tools are listed, guide says why/);
+  assert.doesNotMatch(warmed.instructions(), /FAKE TV INSTRUCTIONS/);
+  await warmed.warm();
+  assert.match(warmed.instructions(), /FAKE TV INSTRUCTIONS$/);
+  assert.match(await guideOf(warmed), /^- TV \(tv_\*\): on, 2 tools$/m);
+
+  // An upstream that is switched off in config.json is named as that, not as missing.
+  assert.match(await guideOf(make({ prefix: "tv", enabled: false, command: "x" })), new RegExp(`^- TV: switched off in config\\.json on the ${PC}\\n- Bank balances: not set up on this ${PC}$`, "m"));
+
+  // gateway.log: one line per change of state, in fixed wording, with the program's file name and never its folder.
+  const upLog = fs.readFileSync(logFile, "utf8").split("\n").filter(l => / upstream /.test(l)).map(l => l.replace(/^\S+ /, ""));
+  assert.equal(upLog.filter(l => l === "upstream tv unavailable: command not found: no-such-python").length, 1, upLog.join("\n"));
+  assert.ok(upLog.includes("upstream tv up, 2 tools") && upLog.some(l => /^upstream money unavailable: \S+ started and exited at once/.test(l)), upLog.join("\n"));
+  assert.ok(!upLog.some(l => l.includes(tmp) || l.includes(fs.realpathSync(tmp))), "a path in the log");
+  assert.match(fs.readFileSync(logFile, "utf8"), /tool tv_play upstream down \d+ms/);
 
   console.log("desktopcheck: all passed");
 } finally {

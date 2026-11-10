@@ -47,7 +47,7 @@ const HOW_TO_WORK = cfg => `Tools on ${WIN ? "Danny's personal Windows PC" : `${
 // One line per kind of tool, added only when this gateway has it.
 const TOOL_LINES = {
   files: `- files_* are read-only and limited to a few allowed folders.${WIN ? " Work data is never available through them." : ""}`,
-  tv: "- tv_* control his TV through his hub.",
+  tv: "- tv_* control his TV through his hub. Call tv_get_guide before the first TV request. If no tv_* tools are listed, guide says why.",
   money: "- money_* read his bank balances and transactions (summarize, don't echo account numbers).",
   sessions: WIN ? `- start_session / send_message / read_messages run Claude Code on the PC with full autonomy, as a separate Windows user
   that cannot see Egnyte or Danny's folders and has none of his sign-ins. Use them for code, scripts, downloads and file
@@ -219,10 +219,26 @@ function localTools(cfg, guard) {
 // ---- upstream stdio servers ----
 // kind is a fixed label for gateway.log.
 const refused = (msg, kind) => Object.assign(new Error(msg), { refused: true, kind });
+// A server that has not answered in this time counts as down, so one dead upstream cannot hold up every tool list.
+let upStartMs = 15_000;
+export const setUpstreamStartMs = ms => { upStartMs = ms; };
+// Why an upstream is not answering, in fixed wording: the program's file name and a cause. Never a path, and never
+// the program's own output. It goes to gateway.log and to the guide tool.
+const whyDown = (e, command) => {
+  const cmd = path.win32.basename(String(command));
+  if (e?.code === "ENOENT") return `command not found: ${cmd}`;
+  if (e?.code === "EACCES" || e?.code === "EPERM") return `not allowed to run ${cmd}`;
+  if (/timed out/i.test(e?.message || "")) return `${cmd} started but did not answer in ${upStartMs / 1000} s`;
+  if (/connection closed/i.test(e?.message || "")) return `${cmd} started and exited at once (wrong script path, or it crashed)`;
+  return `${cmd} could not be started (${/^[A-Z_]+$/.test(e?.code) ? e.code : "error"})`;
+};
+const UP_NAMES = { tv: "TV", money: "Bank balances" };
 
 class Upstream {
   constructor(spec, dir) {
     Object.assign(this, spec); this.dir = dir; this.client = null; this.connecting = null;
+    // down: why the server did not answer the last time it was asked (null when it did). count: tools it listed.
+    this.down = null; this.count = null; this.said = null;
     this.browser = isBrowser(spec);
     const desktop = /agent-desktop/i.test(path.win32.basename(String(spec.command)));
     // Fail closed at startup: agent-desktop or a browser without an allowlist or an off switch would expose every tool
@@ -239,26 +255,50 @@ class Upstream {
     this.connecting ??= (async () => {
       const client = new Client({ name: "duet-gateway", version: VERSION });
       client.onclose = () => { if (this.client === client) this.client = null; };
-      await client.connect(new StdioClientTransport({ command: this.command, args: this.args, env: process.env, stderr: "ignore" }));
+      // On Windows a missing program is first seen as a child that exits: the spawn error (ENOENT) arrives through
+      // onerror, and connect() itself only fails with "connection closed". The spawn error is the better reason.
+      let spawnErr = null;
+      client.onerror = e => { if (["ENOENT", "EACCES", "EPERM"].includes(e?.code)) spawnErr ??= e; };
+      try {
+        await client.connect(new StdioClientTransport({ command: this.command, args: this.args, env: process.env, stderr: "ignore" }), { timeout: upStartMs });
+      } catch (e) {
+        this.down = whyDown(spawnErr || e, this.command);
+        this.count = null;
+        client.close().catch(() => {});
+        throw e;
+      }
       this.client = client;
+      this.down = null;
       return client;
     })().finally(() => { this.connecting = null; });
     return this.connecting;
   }
   async tools() {
-    const { tools } = await (await this.get()).listTools();
-    return tools.filter(t => !this.allow || this.allow.includes(t.name))
+    const client = await this.get();
+    let tools;
+    try { ({ tools } = await client.listTools(undefined, { timeout: upStartMs })); }
+    catch (e) { this.down = whyDown(e, this.command); this.count = null; throw e; }
+    const mine = tools.filter(t => !this.allow || this.allow.includes(t.name))
       // A result that gets the note loses its structuredContent (see mark), so its tool may not promise one.
       .map(({ outputSchema, ...t }) => ({
         ...t, ...(outputSchema && !this.marks(t.name) && { outputSchema }),
         name: `${this.prefix}_${t.name}`, description: `[${this.prefix}] ${t.description || ""}`,
         ...(this.readOnly && { annotations: this.readOnly.includes(t.name) ? { readOnlyHint: true } : { readOnlyHint: false, destructiveHint: true } }),
       }));
+    this.down = null; this.count = mine.length;
+    return mine;
   }
+  // One line for the guide tool.
+  health() { return this.down ? `not answering (${this.down})` : this.count === null ? "set up, not started yet" : `on, ${this.count} tools`; }
   async call(name, args) {
     if (this.allow && !this.allow.includes(name)) throw new Error(`not allowed: ${this.prefix}_${name}`);
-    // TV macros take ~25 s and long sequences more; the SDK default is 60 s.
-    const run = async () => (await this.get()).callTool({ name, arguments: args }, undefined, { timeout: 200_000 });
+    // The TV hub gives its longest job (play) 170 s and its MCP server waits 180 s; the SDK default is 60 s.
+    const run = async () => {
+      let client;
+      try { client = await this.get(); }
+      catch { throw Object.assign(new Error(`The ${this.prefix}_* tools are not answering on the ${PC} (${this.down}). Nothing was sent.`), { upDown: true }); }
+      return client.callTool({ name, arguments: args }, undefined, { timeout: 200_000 });
+    };
     if (!this.offFile) return run();
     const [what, off] = this.browser ? ["the web browser", "web.OFF"] : ["desktop control", "desktop.OFF"];
     if (fs.existsSync(path.join(this.dir, this.offFile))) throw refused(`${what} is off (${this.offFile} on the ${PC}). Danny has to delete that file to turn it back on.`, off);
@@ -285,6 +325,16 @@ export function makeContext(cfg) {
   const dir = path.dirname(cfg.stateFile);
   const ups = (cfg.upstreams || []).filter(s => s.enabled !== false).map(s => new Upstream(s, dir));
   const egnyte = Object.hasOwn(local, "start_egnyte_session");
+  // Asks the given upstreams for their tools. One that does not answer is left out, and gateway.log gets one line
+  // each time an upstream's state changes.
+  const reach = async (which = ups) => {
+    const lists = await Promise.allSettled(which.map(u => u.tools()));
+    which.forEach((u, i) => {
+      const state = lists[i].status === "rejected" ? `unavailable: ${u.down}` : `up, ${u.count} tools`;
+      if (u.said !== state) log(`upstream ${u.prefix} ${u.said = state}`);
+    });
+    return lists;
+  };
   const toolLines = () => [
     TOOL_LINES.files,
     ...["tv", "money"].filter(p => ups.some(u => u.prefix === p)).map(p => TOOL_LINES[p]),
@@ -296,9 +346,14 @@ export function makeContext(cfg) {
     const sw = (file, on = "on") => (fs.existsSync(path.join(dir, file)) ? `switched off on the ${PC} (${file})` : on);
     // PLAYBOOK.md is written for the PC. On a Mac the status says so first.
     const lines = WIN ? [] : [`- This machine: ${machineName(cfg)}, a Mac. Where this guide says PC or Windows, read this Mac. A session here is a separate macOS user.`];
-    lines.push(...ups.filter(u => u.kind).map(u => `- ${u.kind === "browser" ? `Web browser (${u.prefix}_*)` : `Desktop control (${u.prefix}_desktop_*)`}: ${sw(u.offFile)}`));
+    lines.push(...ups.filter(u => u.kind).map(u => `- ${u.kind === "browser" ? `Web browser (${u.prefix}_*)` : `Desktop control (${u.prefix}_desktop_*)`}: ${sw(u.offFile)}${u.down ? `, but ${u.health()}` : ""}`));
     for (const kind of ["desktop", "browser"])
       if (!ups.some(u => u.kind === kind)) lines.push(`- ${kind === "browser" ? "Web browser" : "Desktop control"}: not set up on this ${PC}`);
+    // The servers behind tv_* and money_*: a server that is down lists no tools, and this line is where a client learns why.
+    for (const u of ups.filter(u => !u.kind))
+      lines.push(`- ${UP_NAMES[u.prefix] || u.prefix} (${u.prefix}_*): ${u.health()}${u.down ? `. Its tools are missing until that is fixed on the ${PC}` : ""}`);
+    for (const p of Object.keys(UP_NAMES).filter(p => !ups.some(u => u.prefix === p)))
+      lines.push(`- ${UP_NAMES[p]}: ${(cfg.upstreams || []).some(s => s?.prefix === p) ? `switched off in config.json on the ${PC}` : `not set up on this ${PC}`}`);
     lines.push(`- Claude Code sessions: ${!sessions ? `not set up on this ${PC}` : !cfg.claude.runnerToken ? `not set up on this ${PC} (no runner)` : sw("duet.OFF")}`);
     lines.push(`- Egnyte sessions: ${egnyte ? sw("duet.OFF", "on; Danny approves each call") : "off"}`);
     const names = Object.keys(cfg.commands || {});
@@ -309,7 +364,9 @@ export function makeContext(cfg) {
     description: `How Danny wants work on his ${PC} and online carried out: which tools to use for what, the order, how to check the result, when to ask him, plus what is switched on right now and his own notes. Read it before the first computer or web task of a conversation.`,
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true },
-    run: () => {
+    run: async () => {
+      // A server that was down may be back (or down for a new reason), so those are asked again first.
+      await reach(ups.filter(u => u.down));
       const notes = (Array.isArray(cfg.notes) ? cfg.notes : []).filter(n => typeof n === "string" && n.trim());
       return [fs.readFileSync(path.join(HERE, "PLAYBOOK.md"), "utf8").trim(), `## On this ${PC} right now`, status().join("\n"),
         ...(notes.length ? [`## Danny's notes for this ${PC}`, notes.map(n => `- ${n.trim()}`).join("\n")] : [])].join("\n\n");
@@ -320,9 +377,11 @@ export function makeContext(cfg) {
     sessions,
     serverName: machineName(cfg).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
     instructions: () => [HOW_TO_WORK(cfg), toolLines().join("\n"), ...ups.map(u => u.client?.getInstructions()).filter(Boolean)].join("\n\n"),
+    // Starts every upstream once, so the first conversation already gets each server's own instructions and
+    // gateway.log says which ones came up.
+    warm: () => reach(),
     async listTools() {
-      const lists = await Promise.allSettled(ups.map(u => u.tools()));
-      lists.forEach((r, i) => r.status === "rejected" && log(`upstream ${ups[i].prefix} unavailable: ${r.reason?.message}`));
+      const lists = await reach();
       return [
         ...Object.entries(local).map(([name, t]) => ({ name, description: t.description, inputSchema: t.inputSchema, ...(t.annotations && { annotations: t.annotations }) })),
         ...lists.flatMap(r => (r.status === "fulfilled" ? r.value : [])),
@@ -346,6 +405,7 @@ export function makeContext(cfg) {
       } catch (e) {
         // A refusal is logged by its fixed kind.
         if (e?.refused) outcome = `refused: ${e.kind}`;
+        if (e?.upDown) outcome = "upstream down";
         return { content: [{ type: "text", text: String(e?.message || e) }], isError: true };
       } finally {
         log(`tool ${name} ${outcome} ${Date.now() - t0}ms`);
@@ -563,6 +623,7 @@ Next: restart the gateway, then run npm run web-login and sign in to the sites D
   const runner = ctx.sessions && cfg.claude.runnerToken
     ? ctx.sessions.runnerApp().listen(cfg.claude.runnerPort || 8788, "127.0.0.1", () => log(`runner port 127.0.0.1:${cfg.claude.runnerPort || 8788}`))
     : null;
+  ctx.warm().catch(() => {});
   const stop = async () => { server.close(); runner?.close(); await Promise.allSettled(ctx.ups.map(u => u.close())); process.exit(0); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);

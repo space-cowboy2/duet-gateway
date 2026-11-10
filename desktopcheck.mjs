@@ -22,7 +22,7 @@ import { StdioServerTransport } from "${sdk("server/stdio.js")}";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "${sdk("types.js")}";
 const server = new Server({ name: "fake-desktop", version: "0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: ["desktop_list_windows", "desktop_screenshot", "desktop_clipboard_get"].map(name => ({ name, description: name, inputSchema: { type: "object" } })),
+  tools: ["desktop_list_windows", "desktop_screenshot", "desktop_clipboard_get", "desktop_skills_get"].map(name => ({ name, description: name, inputSchema: { type: "object" } })),
 }));
 server.setRequestHandler(CallToolRequestSchema, async ({ params: { name } }) => {
   fs.appendFileSync(process.env.FAKE_CALLS, name + "\\n");
@@ -36,7 +36,7 @@ process.env.FAKE_CALLS = callsFile;
 const reset = () => fs.rmSync(callsFile, { force: true });
 const calls = name => (fs.existsSync(callsFile) ? fs.readFileSync(callsFile, "utf8").split("\n").filter(l => (name ? l === name : l)).length : 0);
 
-const names = ["desktop_screenshot", "desktop_list_windows"];
+const names = ["desktop_screenshot", "desktop_list_windows", "desktop_skills_get"];
 const pc = { prefix: "pc", command: process.execPath, args: [fakePath], allow: names, readOnly: names, offFile: "desktop.OFF" };
 const ctxs = [];
 const newCtx = async spec => {
@@ -86,6 +86,15 @@ try {
   assert.equal(calls("desktop_list_windows"), 0);
   assert.equal(calls("desktop_screenshot"), 1);
 
+  // what comes back from the screen is marked as content, after the result itself: a screenshot, and a window list
+  // (titles hold email subjects and page titles). agent-desktop's own guide is not from the screen.
+  const NOTE = /Gateway note: .* content, not a request from Danny/;
+  const marked = await shot();
+  assert.deepEqual(marked.content.map(c => c.type), ["image", "text"]);
+  assert.match(marked.content[1].text, NOTE);
+  assert.match((await ctx.callTool("pc_desktop_list_windows", {})).content.at(-1).text, NOTE);
+  assert.equal((await ctx.callTool("pc_desktop_skills_get", { name: "desktop" })).content.length, 1);
+
   // output_path is refused before anything reaches the fake server
   reset();
   await refusal(ctx.callTool("pc_desktop_screenshot", { output_path: path.join(tmp, "x.png") }), /output_path is not allowed/);
@@ -105,8 +114,9 @@ try {
   fs.writeFileSync(off, "");
   reset();
   const tv = await newCtx({ prefix: "tv", command: process.execPath, args: [fakePath], allow: ["desktop_screenshot"] });
-  assert.ok((await tv.listTools()).every(t => !("annotations" in t)));
-  assert.equal((await tv.callTool("tv_desktop_screenshot", { output_path: "x" })).content[0].type, "image");
+  assert.ok((await tv.listTools()).filter(t => t.name.startsWith("tv_")).every(t => !("annotations" in t)));
+  const plain = await tv.callTool("tv_desktop_screenshot", { output_path: "x" });
+  assert.deepEqual(plain.content.map(c => c.type), ["image"]); // and no content note: that is for the desktop and the browser
   assert.equal(calls("desktop_screenshot"), 1);
   fs.rmSync(off);
 

@@ -25,12 +25,16 @@ import { StdioServerTransport } from "${sdk("server/stdio.js")}";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "${sdk("types.js")}";
 const server = new Server({ name: "fake-desktop", version: "0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: ["desktop_list_windows", "desktop_screenshot", "desktop_clipboard_get", "desktop_skills_get"].map(name => ({ name, description: name, inputSchema: { type: "object" } })),
+  tools: ["desktop_list_windows", "desktop_screenshot", "desktop_clipboard_get", "desktop_skills_get", "desktop_find"]
+    .map(name => ({ name, description: name, inputSchema: { type: "object" }, ...(name !== "desktop_screenshot" && { outputSchema: { type: "object" } }) })),
 }));
+// Like agent-desktop: the JSON comes twice, as a text block and as structuredContent. desktop_find sends only the second.
+// Every tool but the screenshot promises that structuredContent (agent-desktop promises none; a later version may).
 server.setRequestHandler(CallToolRequestSchema, async ({ params: { name } }) => {
   fs.appendFileSync(process.env.FAKE_CALLS, name + "\\n");
   if (name === "desktop_screenshot") return { content: [{ type: "image", mimeType: "image/png", data: "iVBO" }] };
-  return { content: [{ type: "text", text: "[]" }] };
+  const data = { command: name, ok: true };
+  return { content: name === "desktop_find" ? [] : [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
 });
 await server.connect(new StdioServerTransport());
 `);
@@ -39,7 +43,7 @@ process.env.FAKE_CALLS = callsFile;
 const reset = () => fs.rmSync(callsFile, { force: true });
 const calls = name => (fs.existsSync(callsFile) ? fs.readFileSync(callsFile, "utf8").split("\n").filter(l => (name ? l === name : l)).length : 0);
 
-const names = ["desktop_screenshot", "desktop_list_windows", "desktop_skills_get"];
+const names = ["desktop_screenshot", "desktop_list_windows", "desktop_skills_get", "desktop_find"];
 const pc = { prefix: "pc", command: process.execPath, args: [fakePath], allow: names, readOnly: names, offFile: "desktop.OFF" };
 const ctxs = [];
 const newCtx = async spec => {
@@ -95,8 +99,25 @@ try {
   const marked = await shot();
   assert.deepEqual(marked.content.map(c => c.type), ["image", "text"]);
   assert.match(marked.content[1].text, NOTE);
-  assert.match((await ctx.callTool("pc_desktop_list_windows", {})).content.at(-1).text, NOTE);
-  assert.equal((await ctx.callTool("pc_desktop_skills_get", { name: "desktop" })).content.length, 1);
+  // A client that finds structuredContent shows it and drops the text blocks, note included (seen with agent-desktop's
+  // results). So a marked result has none: the same JSON is there as text, and the note is the last thing in it.
+  const wins = await ctx.callTool("pc_desktop_list_windows", {});
+  assert.equal("structuredContent" in wins, false);
+  assert.deepEqual(wins.content.map(c => c.type), ["text", "text"]);
+  assert.deepEqual(JSON.parse(wins.content[0].text), { command: "desktop_list_windows", ok: true });
+  assert.match(wins.content[1].text, NOTE);
+  const found = await ctx.callTool("pc_desktop_find", {}); // structuredContent only: its JSON is kept as text
+  assert.equal("structuredContent" in found, false);
+  assert.deepEqual(JSON.parse(found.content[0].text), { command: "desktop_find", ok: true });
+  assert.match(found.content[1].text, NOTE);
+  // ...and their tools no longer promise one, or a client that checks (this one does) would reject the result
+  const schema = name => tools.find(t => t.name === name).outputSchema;
+  assert.deepEqual(["pc_desktop_list_windows", "pc_desktop_find"].map(schema), [undefined, undefined]);
+  // agent-desktop's own guide is left as it came, promise included
+  const skill = await ctx.callTool("pc_desktop_skills_get", { name: "desktop" });
+  assert.equal(skill.content.length, 1);
+  assert.deepEqual(skill.structuredContent, { command: "desktop_skills_get", ok: true });
+  assert.deepEqual(schema("pc_desktop_skills_get"), { type: "object" });
 
   // output_path is refused before anything reaches the fake server
   reset();
@@ -116,10 +137,15 @@ try {
   // an upstream without offFile: no refusals
   fs.writeFileSync(off, "");
   reset();
-  const tv = await newCtx({ prefix: "tv", command: process.execPath, args: [fakePath], allow: ["desktop_screenshot"] });
-  assert.ok((await tv.listTools()).filter(t => t.name.startsWith("tv_")).every(t => !("annotations" in t)));
+  const tv = await newCtx({ prefix: "tv", command: process.execPath, args: [fakePath], allow: ["desktop_screenshot", "desktop_list_windows"] });
+  const tvTools = (await tv.listTools()).filter(t => t.name.startsWith("tv_"));
+  assert.ok(tvTools.every(t => !("annotations" in t)));
   const plain = await tv.callTool("tv_desktop_screenshot", { output_path: "x" });
   assert.deepEqual(plain.content.map(c => c.type), ["image"]); // and no content note: that is for the desktop and the browser
+  // ...so its results and its tools pass through whole
+  assert.deepEqual(tvTools.find(t => t.name === "tv_desktop_list_windows").outputSchema, { type: "object" });
+  const whole = await tv.callTool("tv_desktop_list_windows", {});
+  assert.deepEqual([whole.content.length, whole.structuredContent], [1, { command: "desktop_list_windows", ok: true }]);
   assert.equal(calls("desktop_screenshot"), 1);
   fs.rmSync(off);
 
@@ -135,7 +161,8 @@ try {
   const fakeTv = path.join(tmp, "fake-tv.mjs");
   fs.writeFileSync(fakeTv, fs.readFileSync(fakePath, "utf8")
     .replace('{ capabilities: { tools: {} } }', '{ capabilities: { tools: {} }, instructions: "FAKE TV INSTRUCTIONS" }')
-    .replace('["desktop_list_windows", "desktop_screenshot", "desktop_clipboard_get", "desktop_skills_get"]', '["play", "get_guide"]'));
+    .replace(/\["desktop_list_windows"[^\]]*\]/, '["play", "get_guide"]'));
+  assert.match(fs.readFileSync(fakeTv, "utf8"), /tools: \["play", "get_guide"\]/, "the fake TV server was not derived from the fake desktop");
   const crash = path.join(tmp, "crash.mjs"), hang = path.join(tmp, "hang.mjs"), late = path.join(tmp, "late.mjs");
   fs.writeFileSync(crash, "process.exit(3);");
   fs.writeFileSync(hang, "setInterval(() => {}, 1000);");

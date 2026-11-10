@@ -50,7 +50,7 @@ try {
   // tools
   const ctx = makeContext(cfg);
   const text = r => r.content[0].text;
-  assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "run_command"]);
+  assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "guide", "run_command"]);
   assert.equal(text(await ctx.callTool("files_read", { path: path.join(root, "sub", "hello.txt") })), "hello world");
   assert.ok((await ctx.callTool("files_read", { path: path.join(root, "jump", "secret.txt") })).isError);
   assert.ok((await ctx.callTool("files_read", { path: path.join(root, "bin.dat") })).isError);

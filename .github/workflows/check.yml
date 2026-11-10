@@ -26,3 +26,5 @@ jobs:
       - run: npm ci
       - run: npm run check:sessions
       - run: node doctorcheck.mjs
+      - run: node desktopcheck.mjs
+      - run: node webcheck.mjs

@@ -6,7 +6,7 @@ Remote MCP gateway that lets Claude (claude.ai connectors, Duet) reach tools on 
 - `pc_desktop_*`: see and drive this PC's desktop (screenshots, clicks, typing, opening apps) through agent-desktop. Off until you set `enabled`
 - `web_*`: a real browser on this PC with its own profile, for online tasks that need your sign-ins: forms, bookings, orders. Off until you run `npm run enable-web`
 - `guide`: how you want work on this PC and online carried out. It returns [PLAYBOOK.md](PLAYBOOK.md), what is switched on right now, and your `notes`
-- `health_report`: read-only usage and error counts from `gateway.log` and `runner.log` plus the doctor's checks. The monitor and fixer tasks use it to file issues and draft fixes; see [MONITOR.md](MONITOR.md)
+- `health_report`: read-only usage and error counts from `gateway.log` and `runner.log` plus the doctor's checks. The monitor and fixer tasks use it to file issues and draft fixes; see [MONITOR.md](MONITOR.md). With `alerts` in `config.json` (`enabled`, `repo`, `tokenFile` naming a file next to `config.json` that holds a fine-grained GitHub token with Issues read/write on that repo only, and `ignore`, a list of finding fingerprints with `*` wildcards), the gateway also files an issue itself seconds after a problem. It is off in the example
 - `files_list`, `files_read`, `files_search`: read-only, limited to the folders in `roots`
 - `run_command`: only the named commands listed in `commands`, which is empty by default
 - `start_session`, `send_message`, `read_messages`, `list_sessions`, `end_session`: Claude Code sessions with full autonomy, run as a separate user (`duet-agent`) that cannot see Egnyte or your profile

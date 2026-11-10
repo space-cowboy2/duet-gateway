@@ -1,13 +1,24 @@
-# Monitor and fixer
+# Monitor agent and Fixer agent
 
-Two scheduled Claude tasks keep the gateway improving. GitHub issues are the queue between them, and nothing merges
-without Danny.
+Three parts keep the gateway improving. GitHub issues are the queue between them, and nothing merges without Danny.
 
 ```
-gateway.log, runner.log, doctor ──▶ health_report tool ──▶ Monitor (daily) ──▶ GitHub issues labelled "monitor"
-                                                                                     │
-                                         Danny reviews and merges ◀── draft PR ◀── Fixer (daily, one issue)
+gateway.log ──▶ alerts.mjs (in the gateway, seconds after a problem) ──┐
+gateway.log, runner.log, doctor ──▶ health_report ──▶ Monitor (daily) ─┴─▶ GitHub issue labelled "monitor"
+                                                                              │ (issues event)
+                                    Danny reviews and merges ◀── draft PR ◀── Fixer (.github/workflows/fixer.yml)
 ```
+
+- **Alerts** (`alerts.mjs`): after a log line that looks like trouble, the gateway waits 30 s, sums up the last hour
+  and files or comments on one issue per finding. At most 5 issues an hour, and one update per finding every 6 hours.
+  Turn it on with `"alerts": { "enabled": true, "repo": "space-cowboy2/duet-gateway", "ignore": ["upstream-down:tv", "tool-upstream-down:tv_*"] }`
+  in `config.json` and a `github-token` file next to it: a fine-grained token for this repo with Issues read/write only.
+  `gateway.log` gets `alert: <fingerprint> filed #n`, `updated #n` or why not. State is kept in `alerts.json`.
+- **Monitor agent** (scheduled Claude task "Monitor agent + morning report", 7:43 am Chicago): the wider look, trends and CI,
+  fills in the cause on issues, then posts a short report of the last day: new issues, what was fixed, what needs Danny.
+  The monitor pass runs on Sonnet.
+- **Fixer agent** (GitHub Actions workflow "Fixer agent", on Sonnet): starts as soon as an issue opened by the owner gets the `monitor` label, plus a daily
+  sweep and a manual run (Actions → Fixer agent → Run workflow).
 
 - **Where the data comes from.** Every tool call already writes one line to `gateway.log`: the tool name, the outcome
   (ok, error, refused, upstream down) and how long it took. Upstream outages, restarts, sign-in failures and Claude Code
@@ -16,8 +27,8 @@ gateway.log, runner.log, doctor ──▶ health_report tool ──▶ Monitor (
   findings, each with a stable fingerprint. It blanks user folders, IP addresses and anything token-shaped.
 - **The tasks read this file on every run.** To change how they work, edit this file in a PR.
 
-Both tasks run in the cloud. The monitor needs the duet-gateway connector (to call `health_report`) and GitHub; the
-fixer needs GitHub only.
+The monitor runs in the cloud and needs the duet-gateway connector (to call `health_report`) and GitHub. The fixer runs
+in GitHub Actions with the same Claude secret as the PR review.
 
 ## Labels
 
@@ -30,7 +41,7 @@ fixer needs GitHub only.
 
 Create a missing label before using it.
 
-## Monitor
+## Monitor agent
 
 1. Call `health_report` with `hours: 26` (a little overlap with the last run). If the connector can't be reached, file
    or update one issue, fingerprint `monitor-unreachable`, and stop.
@@ -50,7 +61,7 @@ Create a missing label before using it.
 5. If an open `monitor` issue's problem has not shown up for 7 days, comment that and close it as completed.
 6. File at most 5 new issues per run, worst first. If nothing is wrong, do nothing: no "all clear" issue.
 
-**Issue format.** Title: short and specific (`files_read fails on paths with spaces`). Labels: `monitor` plus `bug`,
+**Issue format.** End the body with `_Filed by the Monitor agent._` and start comments with `Monitor agent:`. Title: short and specific (`files_read fails on paths with spaces`). Labels: `monitor` plus `bug`,
 `enhancement` or `needs-danny`. Body:
 
 ```
@@ -69,7 +80,7 @@ severity: bug | problem | perf | security
 
 Never paste anything from the report that looks personal: it is already scrubbed, keep it that way.
 
-## Fixer
+## Fixer agent
 
 1. Take the oldest open issue labelled `monitor` without `fixer:pr-open`, `needs-danny` or `wontfix-auto`. Prefer
    `bug` over `enhancement`. If there is none, stop. One issue per run.
@@ -79,7 +90,7 @@ Never paste anything from the report that looks personal: it is already scrubbed
 4. Fix it on a branch `fix/<issue-number>-<slug>`. Keep the change to what the issue needs. Add or extend a test.
 5. Run `npm run check`. `selfcheck.mjs` needs Windows; on Linux run the checks the `linux` job in
    `.github/workflows/check.yml` runs. Don't open a PR with a failing check.
-6. Open a **draft** PR that says `Fixes #<n>`, what changed, and how it was tested. Comment the PR link on the issue and
+6. Open a **draft** PR titled `Fixer agent: <what it fixes>` that says `Fixes #<n>`, what changed, and how it was tested. Comment the PR link on the issue and
    add `fixer:pr-open`.
 
 **Hard limits.** Everything in `REVIEW.md` under Blocking applies. Never weaken auth, the path guard, kill switches
@@ -88,6 +99,14 @@ Never paste anything from the report that looks personal: it is already scrubbed
 `main`, or mark a PR ready. Never skip or delete a test. If the right fix would need any of that, comment on the issue
 and add `needs-danny` instead.
 
+## Where to look
+
+- Live issues: label [`monitor`](https://github.com/space-cowboy2/duet-gateway/issues?q=label%3Amonitor)
+- Fixer agent PRs: [`head:fix/`](https://github.com/space-cowboy2/duet-gateway/pulls?q=is%3Apr+head%3Afix%2F)
+- Fixer agent runs: Actions → [Fixer agent](https://github.com/space-cowboy2/duet-gateway/actions/workflows/fixer.yml)
+- Monitor agent runs: a thread per run in the Duet bridge project, and claude.ai/code → Scheduled
+
 ## Turning them off
 
-Pause or delete the scheduled tasks at claude.ai/code (Scheduled), or add `wontfix-auto` to a single issue.
+Monitor agent: pause it at claude.ai/code (Scheduled). Alerts: remove `alerts` from `config.json` or delete `github-token`.
+Fixer agent: disable the Fixer agent workflow in GitHub Actions. One issue: add `wontfix-auto`.

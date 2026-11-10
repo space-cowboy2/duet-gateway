@@ -132,6 +132,8 @@ Stop-Agent
 New-Item -ItemType Directory -Force "$Base\bin", "$Base\logs" | Out-Null
 icacls $Base /inheritance:r /grant:r "${Admins}:(OI)(CI)F" "${System}:(OI)(CI)F" "${UserName}:(OI)(CI)RX" /Q | Out-Null
 icacls "$Base\logs" /grant "${UserName}:(OI)(CI)M" /Q | Out-Null
+# You (the gateway runs as you) may read the logs, nothing wider: health_report and the doctor read runner.log.
+icacls "$Base\logs" /grant "*${meSid}:(OI)(CI)R" /Q | Out-Null
 Copy-Item "$Repo\runner.mjs", "$Repo\claude.mjs" "$Base\bin" -Force
 Copy-Item $ClaudeExe "$Base\bin\claude.exe" -Force
 $v = & "$Base\bin\claude.exe" --version 2>&1

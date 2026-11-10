@@ -166,7 +166,7 @@ const run = async (probe, opts = {}) => {
   const EXE = P("bin", "agent-desktop.exe"), same = (a, b) => path.resolve(a) === path.resolve(b);
   const pcRun = (pc, { exe = true, off = false } = {}) => {
     const p = healthy(pc && { upstreams: [pc] }), has = p.exists;
-    p.exists = x => (exe && same(x, EXE)) || (off && same(x, P("gw", "desktop.OFF"))) || has(x);
+    p.exists = x => (exe && same(x, EXE)) || (off && same(x, P("gw", off === true ? "desktop.OFF" : off))) || has(x);
     return run(p);
   };
   const pc = { prefix: "pc", enabled: true, command: EXE, args: ["mcp"], allow: ["desktop_snapshot"], offFile: "desktop.OFF" };
@@ -186,6 +186,17 @@ const run = async (probe, opts = {}) => {
   ({ by } = await pcRun({ ...pc, allow: ["desktop_snapshot", "desktop_clipboard_get", "desktop_batch"] }));
   assert.equal(by("desktop control").level, "fail"); assert.match(by("desktop control").detail, /^pc allowlist includes desktop_clipboard_get, desktop_batch$/);
   ({ by } = await pcRun({ ...pc, enabled: false, allow: undefined })); assert.equal(by("desktop control").level, "ok");
+  // The switch is the configured offFile, as in the gateway: another name is honoured, and desktop.OFF then means nothing.
+  ({ by } = await pcRun({ ...pc, offFile: "pc.OFF" }, { off: "pc.OFF" }));
+  assert.deepEqual([by("desktop control").level, by("desktop control").detail], ["warn", "switched off (pc.OFF)"]);
+  ({ by } = await pcRun({ ...pc, offFile: "pc.OFF" }, { off: true })); assert.match(by("desktop control").detail, /^on/);
+  // A screenGuard left over from before the guard was removed is ignored by the gateway: warn, on any upstream, on or off.
+  let r;
+  ({ r } = await pcRun(pc)); assert.ok(!r.some(x => x.check === "screenGuard"));
+  for (const up of [pc, { ...pc, enabled: false }]) {
+    ({ by } = await pcRun({ ...up, screenGuard: { apps: ["OUTLOOK.EXE"] } }));
+    assert.equal(by("screenGuard").level, "warn"); assert.match(by("screenGuard").detail, /^ignored on pc: .*not blocked/);
+  }
 }
 
 // 5c. macOS: the runner lives in /Library/Application Support/duet-agent, a LaunchDaemon keeps it running, there is no

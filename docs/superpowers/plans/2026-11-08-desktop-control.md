@@ -2,6 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Superseded in part by PR #11 (2026-11-09).** The work-app guard this plan builds (`screenGuard`, `blockedApps`,
+> `compileGuard`, the window and process checks) was removed at Danny's decision. Don't rebuild it from this plan. The
+> Desktop control section of the README is the current description.
+
 **Goal:** Expose agent-desktop through the gateway as `pc_desktop_*`, refused whenever a work app window is open.
 
 **Architecture:** A new upstream entry in config reuses the `Upstream` proxy in `gateway.mjs`. Optional `readOnly` adds

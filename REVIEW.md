@@ -21,17 +21,23 @@ This gateway exposes a home PC to the internet through Tailscale Funnel. The bar
 - **Sessions.** Normal sessions run as `duet-agent` and stay in their workspaces. Egnyte sessions stay
   approval-gated, with web tools and secret paths denied. The `duet.OFF` kill switch must keep working.
   Anything that lets a normal session reach `Z:\`, the owner's profile, or code that runs as the owner blocks.
+- **Desktop control.** `pc_desktop_*` has no work-app guard, so whatever is on screen can reach Claude. The
+  limits that are left must keep working: the upstream's `allow` list (no clipboard, notification or `batch`
+  tools), the `desktop.OFF` kill switch, the `output_path` refusal, and the startup check that an agent-desktop
+  upstream has both `allow` and `offFile`. Act tools stay out of `readOnly`, so claude.ai can ask before each
+  one. Weakening any of these blocks.
 - **Money tools.** `money_*` stays a read-only allowlist. Adding a tool that moves money or changes accounts blocks.
 - **Secrets.** No secrets, tokens, passphrase hashes or machine paths committed. `config.json`, `state.json`,
-  `sessions.json`, `gateway.log` and `duet.OFF` stay out of git.
+  `sessions.json`, `gateway.log`, `duet.OFF` and `desktop.OFF` stay out of git.
 - **Logs.** `gateway.log` and `runner.log` hold ids and outcomes only. Logging prompts, answers, file contents
   or tokens blocks.
 
 ### Correctness
 - Bugs that break a tool, the OAuth flow, the runner protocol, or startup.
 - Unhandled promise rejections or thrown errors that can crash the gateway from tool input.
-- Changed behavior with no matching change to `selfcheck.mjs` or `sessioncheck.mjs`. Security-relevant
-  changes (guard, auth, sessions, commands) need a test that would fail without the fix.
+- Changed behavior with no matching change to `selfcheck.mjs`, `sessioncheck.mjs`, `doctorcheck.mjs` or
+  `desktopcheck.mjs`. Security-relevant changes (guard, auth, sessions, commands, desktop control) need a test
+  that would fail without the fix.
 
 ### Project rules
 - New dependencies need a reason in the PR description and an exact version (no `^` or `~`), matching `package.json`.

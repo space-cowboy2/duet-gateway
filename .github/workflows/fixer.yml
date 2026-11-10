@@ -84,7 +84,7 @@ jobs:
           claude_args: |
             --model claude-sonnet-5-5
             --max-turns 80
-            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm ci),Bash(npm run check:sessions),Bash(node healthcheck.mjs),Bash(node alertscheck.mjs),Bash(node doctorcheck.mjs),Bash(node desktopcheck.mjs),Bash(node webcheck.mjs),Bash(node sessioncheck.mjs),Bash(ls:*),Bash(cat:*),Bash(git status:*),Bash(git branch:*),Bash(git fetch:*),Bash(git checkout fix/:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout -b fix/:*),Bash(git switch -c fix/:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin fix/:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh pr list:*),Bash(gh pr create:*)"
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm ci),Bash(npm run check:sessions),Bash(node healthcheck.mjs),Bash(node alertscheck.mjs),Bash(node doctorcheck.mjs),Bash(node desktopcheck.mjs),Bash(node webcheck.mjs),Bash(node sessioncheck.mjs),Bash(ls:*),Bash(cat:*),Bash(git status:*),Bash(git branch:*),Bash(git fetch:*),Bash(git checkout:*),Bash(git switch:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout -b fix/:*),Bash(git switch -c fix/:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin fix/:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh pr list:*),Bash(gh pr create:*)"
 
       # So a run never ends silently: if the issue got neither a PR nor a Fixer agent comment, say so on the issue.
       - name: Report a run that left nothing behind

@@ -45,10 +45,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Commit identity
+        run: |
+          git config user.name "Fixer agent"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Fix the issue
+        id: fix
         uses: anthropics/claude-code-action@v1
         with:
+          show_full_output: true
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
@@ -77,4 +83,20 @@ jobs:
           claude_args: |
             --model claude-sonnet-5-5
             --max-turns 80
-            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm ci),Bash(npm run check:sessions),Bash(node healthcheck.mjs),Bash(node alertscheck.mjs),Bash(node doctorcheck.mjs),Bash(node desktopcheck.mjs),Bash(node webcheck.mjs),Bash(node sessioncheck.mjs),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout -b fix/:*),Bash(git switch -c fix/:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin fix/:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh pr list:*),Bash(gh pr create --draft:*)"
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(npm ci),Bash(npm run check:sessions),Bash(node healthcheck.mjs),Bash(node alertscheck.mjs),Bash(node doctorcheck.mjs),Bash(node desktopcheck.mjs),Bash(node webcheck.mjs),Bash(node sessioncheck.mjs),Bash(ls:*),Bash(cat:*),Bash(git status:*),Bash(git branch:*),Bash(git fetch:*),Bash(git checkout fix/:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git checkout -b fix/:*),Bash(git switch -c fix/:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin fix/:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh issue comment:*),Bash(gh issue edit:*),Bash(gh pr list:*),Bash(gh pr create --draft:*)"
+
+      # So a run never ends silently: if the issue got neither a PR nor a Fixer agent comment, say so on the issue.
+      - name: Report a run that left nothing behind
+        if: always() && github.event.issue.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ github.event.issue.number }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTCOME: ${{ steps.fix.outcome }}
+        run: |
+          since=$(date -u -d '-60 minutes' +%Y-%m-%dT%H:%M:%SZ)
+          said=$(gh api "repos/$REPO/issues/$ISSUE/comments?since=$since" --jq '[.[] | select(.body | startswith("Fixer agent:"))] | length')
+          if [ "$said" = "0" ]; then
+            gh issue comment "$ISSUE" --repo "$REPO" --body "Fixer agent: this run ended ($OUTCOME) without a PR or a note. See $RUN"
+          fi

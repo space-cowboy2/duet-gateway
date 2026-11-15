@@ -9,3 +9,10 @@ desktop.OFF
 web.OFF
 github-token
 alerts.json
+memory.json
+inbox.json
+watches.json
+journal.jsonl
+watch.OFF
+*.token
+*-token

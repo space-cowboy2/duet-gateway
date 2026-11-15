@@ -1,16 +1,18 @@
 {
   "name": "duet-gateway",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node gateway.mjs",
-    "check": "node selfcheck.mjs && node sessioncheck.mjs && node doctorcheck.mjs && node desktopcheck.mjs && node webcheck.mjs && node healthcheck.mjs && node alertscheck.mjs",
+    "check": "node selfcheck.mjs && node sessioncheck.mjs && node doctorcheck.mjs && node desktopcheck.mjs && node webcheck.mjs && node healthcheck.mjs && node alertscheck.mjs && node assistantcheck.mjs",
     "doctor": "node doctor.mjs",
     "set-passphrase": "node gateway.mjs set-passphrase",
     "check:sessions": "node sessioncheck.mjs",
     "enable-web": "node gateway.mjs enable-web",
-    "web-login": "node gateway.mjs web-login"
+    "web-login": "node gateway.mjs web-login",
+    "enable-notify": "node gateway.mjs enable-notify",
+    "tell": "node gateway.mjs tell"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

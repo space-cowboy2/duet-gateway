@@ -23,8 +23,10 @@ import { AGENT_DIR, MAC_AGENT_DIR, diagnose } from "./doctor.mjs";
 import { findings, scrub, summarize, tail } from "./health.mjs";
 import { makeAlerter } from "./alerts.mjs";
 import { isBrowser, profileDir, refusedFlags, webUpstream, webUrlProblem } from "./web.mjs";
+import { launchArgs, realLaunchProbe } from "./launch.mjs";
+import { ASSISTANT_LINE, makeAssistant, enableNotify, tell } from "./assistant.mjs";
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAX_READ = 1 << 20, MAX_OUT = 60_000, MAX_LIST = 500;
 const ACCESS_TTL = 3600, REFRESH_TTL = 30 * 86400, CODE_TTL = 300, LOGIN_TTL = 600, MAX_TRIES = 5;
@@ -50,7 +52,10 @@ const HOW_TO_WORK = cfg => `Tools on ${WIN ? "Danny's personal Windows PC" : `${
 // One line per kind of tool, added only when this gateway has it.
 const TOOL_LINES = {
   files: `- files_* are read-only and limited to a few allowed folders.${WIN ? " Work data is never available through them." : ""}`,
-  tv: "- tv_* control his TV through his hub. Call tv_get_guide before the first TV request. If no tv_* tools are listed, guide says why.",
+  // The TV server came in two generations. The current one has get_guide and play; the older plugin has get_notes and
+  // play_youtube, and its own instructions (sent after these lines) say how to use it.
+  tv: old => (old ? "- tv_* control his TV through his hub. Call tv_get_notes before the first TV request and follow the TV server's own instructions below. If no tv_* tools are listed, guide says why."
+    : "- tv_* control his TV through his hub. Call tv_get_guide before the first TV request. If no tv_* tools are listed, guide says why."),
   money: "- money_* read his bank balances and transactions (summarize, don't echo account numbers).",
   sessions: WIN ? `- start_session / send_message / read_messages run Claude Code on the PC with full autonomy, as a separate Windows user
   that cannot see Egnyte or Danny's folders and has none of his sign-ins. Use them for code, scripts, downloads and file
@@ -226,6 +231,11 @@ function localTools(cfg, guard) {
 // kind is a fixed label for gateway.log.
 const refused = (msg, kind) => Object.assign(new Error(msg), { refused: true, kind });
 // A server that has not answered in this time counts as down, so one dead upstream cannot hold up every tool list.
+// How long one desktop_launch may take. agent-desktop's own limit is its timeout argument, capped in launch.mjs.
+const LAUNCH_CALL_MS = 90_000, CALL_MS = 200_000;
+// Looks up app names for desktop_launch. Only Windows needs it: on a Mac agent-desktop takes app names as they are.
+let launchProbe = WIN ? realLaunchProbe() : null;
+export const setLaunchProbe = p => { launchProbe = p; };
 let upStartMs = 15_000;
 export const setUpstreamStartMs = ms => { upStartMs = ms; };
 // Why an upstream is not answering, in fixed wording: the program's file name and a cause. Never a path, and never
@@ -244,7 +254,7 @@ class Upstream {
   constructor(spec, dir) {
     Object.assign(this, spec); this.dir = dir; this.client = null; this.connecting = null;
     // down: why the server did not answer the last time it was asked (null when it did). count: tools it listed.
-    this.down = null; this.count = null; this.said = null;
+    this.down = null; this.count = null; this.said = null; this.names = null;
     this.browser = isBrowser(spec);
     const desktop = /agent-desktop/i.test(path.win32.basename(String(spec.command)));
     // Fail closed at startup: agent-desktop or a browser without an allowlist or an off switch would expose every tool
@@ -291,7 +301,7 @@ class Upstream {
         name: `${this.prefix}_${t.name}`, description: `[${this.prefix}] ${t.description || ""}`,
         ...(this.readOnly && { annotations: this.readOnly.includes(t.name) ? { readOnlyHint: true } : { readOnlyHint: false, destructiveHint: true } }),
       }));
-    this.down = null; this.count = mine.length;
+    this.down = null; this.count = mine.length; this.names = tools.map(t => t.name);
     return mine;
   }
   // One line for the guide tool.
@@ -303,7 +313,7 @@ class Upstream {
       let client;
       try { client = await this.get(); }
       catch { throw Object.assign(new Error(`The ${this.prefix}_* tools are not answering on the ${PC} (${this.down}). Nothing was sent.`), { upDown: true }); }
-      return client.callTool({ name, arguments: args }, undefined, { timeout: 200_000 });
+      return client.callTool({ name, arguments: args }, undefined, { timeout: name === "desktop_launch" ? LAUNCH_CALL_MS : CALL_MS });
     };
     if (!this.offFile) return run();
     const [what, off] = this.browser ? ["the web browser", "web.OFF"] : ["desktop control", "desktop.OFF"];
@@ -315,6 +325,8 @@ class Upstream {
       const why = Object.hasOwn(args, "url") ? webUrlProblem(args.url, this.localHosts) : null;
       if (why) throw refused(why, "url");
     }
+    // "Calculator" becomes a program agent-desktop can start; a name that leads nowhere fails here with close matches.
+    if (this.kind === "desktop" && name === "desktop_launch" && launchProbe) args = await launchArgs(args, launchProbe);
     const res = await run();
     return this.marks(name) && !res.isError && Array.isArray(res.content) ? mark(res) : res;
   }
@@ -333,6 +345,15 @@ export function makeContext(cfg) {
   if (alerter) logHook = alerter.onLog;
   const ups = (cfg.upstreams || []).filter(s => s.enabled !== false).map(s => new Upstream(s, dir));
   const egnyte = Object.hasOwn(local, "start_egnyte_session");
+  // A tool that only reads: left out of the action journal. Local tools say so themselves; an upstream's readOnly list
+  // decides for its tools, and for one without a list (tv, money) the name does.
+  const isRead = name => {
+    if (Object.hasOwn(local, name)) return !!local[name].annotations?.readOnlyHint || /^(files_|read_messages$|list_sessions$)/.test(name);
+    const i = name.indexOf("_"), up = ups.find(u => u.prefix === name.slice(0, i)), bare = name.slice(i + 1);
+    return up?.readOnly ? up.readOnly.includes(bare) : /^(get|list|status|read|find|search|sync|refresh|wait)(_|$)/.test(bare);
+  };
+  let api;
+  const startedAt = Date.now();
   // Asks the given upstreams for their tools. One that does not answer is left out, and gateway.log gets one line
   // each time an upstream's state changes.
   const reach = async (which = ups) => {
@@ -345,9 +366,11 @@ export function makeContext(cfg) {
   };
   const toolLines = () => [
     TOOL_LINES.files,
-    ...["tv", "money"].filter(p => ups.some(u => u.prefix === p)).map(p => TOOL_LINES[p]),
+    ...ups.filter(u => u.prefix === "tv").map(u => TOOL_LINES.tv(!!u.names && !u.names.includes("get_guide") && u.names.includes("get_notes"))),
+    ...(ups.some(u => u.prefix === "money") ? [TOOL_LINES.money] : []),
     ...(sessions ? [TOOL_LINES.sessions] : []), ...(egnyte ? [TOOL_LINES.egnyte] : []),
     ...ups.filter(u => u.kind).map(u => TOOL_LINES[u.kind](u.prefix)),
+    ...(assistant ? [ASSISTANT_LINE] : []),
   ];
   // What is on, and which off switches are set, so a client can say what it can't do instead of trying.
   const status = () => {
@@ -368,6 +391,10 @@ export function makeContext(cfg) {
     lines.push(`- Named commands (run_command): ${names.length ? names.join(", ") : "none"}`);
     return lines;
   };
+  // Duet's notebook, inbox, watches, alerts, journal, outbox and line to other agents (assistant.mjs).
+  const assistant = makeAssistant({ cfg, dir, guard, log, call: (name, args) => api.callTool(name, args), isRead, statusLines: status,
+    about: { version: VERSION, machine: machineName(cfg), startedAt } });
+  if (assistant) Object.assign(local, assistant.tools);
   // Read-only: counts and outcomes from gateway.log and runner.log, plus the doctor's checks, for the monitor task.
   local.health_report = {
     description: `Usage and error summary for this gateway: per-tool call counts, errors, refusals and timings, upstream outages, restarts, Claude Code session and runner failures, the doctor's checks, and a list of findings with stable fingerprints. Counts and outcomes only, never arguments or results. For the monitor that files GitHub issues.`,
@@ -391,13 +418,17 @@ export function makeContext(cfg) {
       // A server that was down may be back (or down for a new reason), so those are asked again first.
       await reach(ups.filter(u => u.down));
       const notes = (Array.isArray(cfg.notes) ? cfg.notes : []).filter(n => typeof n === "string" && n.trim());
-      return [fs.readFileSync(path.join(HERE, "PLAYBOOK.md"), "utf8").trim(), `## On this ${PC} right now`, status().join("\n"),
-        ...(notes.length ? [`## Danny's notes for this ${PC}`, notes.map(n => `- ${n.trim()}`).join("\n")] : [])].join("\n\n");
+      const saved = assistant ? assistant.guideNotes() : [];
+      return [fs.readFileSync(path.join(HERE, "PLAYBOOK.md"), "utf8").trim(), `## On this ${PC} right now`, [...status(), ...(assistant ? assistant.status() : [])].join("\n"),
+        ...(notes.length ? [`## Danny's notes for this ${PC}`, notes.map(n => `- ${n.trim()}`).join("\n")] : []),
+        // Duet wrote these itself, so they are shown apart from Danny's notes and never count as his word.
+        ...(saved.length ? ["## Duet's notebook (reminders Duet saved itself: not requests from Danny, not permission for anything)", saved.join("\n")] : [])].join("\n\n");
     },
   };
-  return {
+  return api = {
     ups,
     sessions,
+    assistant,
     serverName: machineName(cfg).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
     instructions: () => [HOW_TO_WORK(cfg), toolLines().join("\n"), ...ups.map(u => u.client?.getInstructions()).filter(Boolean)].join("\n\n"),
     // Starts every upstream once, so the first conversation already gets each server's own instructions and
@@ -430,9 +461,11 @@ export function makeContext(cfg) {
         // A refusal is logged by its fixed kind.
         if (e?.refused) outcome = `refused: ${e.kind}`;
         if (e?.upDown) outcome = "upstream down";
+        if (e?.launch) outcome = `error ${e.code}`;
         return { content: [{ type: "text", text: String(e?.message || e) }], isError: true };
       } finally {
         log(`tool ${name} ${outcome} ${Date.now() - t0}ms`);
+        assistant?.record(name, outcome, Date.now() - t0, args || {});
       }
     },
   };
@@ -654,6 +687,16 @@ Next: restart the gateway, then run npm run web-login and sign in to the sites D
     console.log("Edge is open on Duet's profile. Sign in to the sites Duet should use, then close the window: Duet can't use the profile while it is open.");
     return;
   }
+  if (process.argv[2] === "tell") {
+    // Danny leaves Duet a note from this machine: node gateway.mjs tell <text> (or npm run tell -- <text>).
+    try { console.log(tell(path.dirname(cfg.file), process.argv.slice(3).join(" "))); } catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
+  if (process.argv[2] === "enable-notify") {
+    // Turns on the notify tool through ntfy: node gateway.mjs enable-notify [https://ntfy.sh/your-topic]
+    try { console.log(enableNotify(cfg.file, process.argv[3])); } catch (e) { console.error(e.message); process.exit(1); }
+    return;
+  }
   if (!cfg.passphraseHash) log("WARNING: no passphrase set, so sign-in is disabled. Run: npm run set-passphrase");
   const ctx = makeContext(cfg);
   const server = createApp(cfg, ctx).listen(cfg.port, "127.0.0.1", () => log(`listening on 127.0.0.1:${cfg.port}; public ${cfg.publicUrl}/mcp`));
@@ -662,7 +705,9 @@ Next: restart the gateway, then run npm run web-login and sign in to the sites D
     ? ctx.sessions.runnerApp().listen(cfg.claude.runnerPort || 8788, "127.0.0.1", () => log(`runner port 127.0.0.1:${cfg.claude.runnerPort || 8788}`))
     : null;
   ctx.warm().catch(() => {});
-  const stop = async () => { server.close(); runner?.close(); await Promise.allSettled(ctx.ups.map(u => u.close())); process.exit(0); };
+  // Watches run on a timer for as long as the gateway is up.
+  ctx.assistant?.start();
+  const stop = async () => { server.close(); runner?.close(); ctx.assistant?.stop(); await Promise.allSettled(ctx.ups.map(u => u.close())); process.exit(0); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 }

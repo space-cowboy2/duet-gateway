@@ -83,6 +83,15 @@ assert.equal(new Set(fps).size, fps.length, "fingerprints are unique");
 // Same input, same fingerprints: the monitor relies on that to update an issue instead of filing a new one.
 assert.deepEqual(findings(summarize({ gatewayLog, runnerLog, hours: 24, now })).map(x => x.fingerprint), findings(sum).map(x => x.fingerprint));
 
+// A runner that restarts is refused a few times and then takes over: that is not a second runner. Refusals with no
+// takeover, or far more than a restart explains, still are.
+const refusals = n => Array.from({ length: n }, (_, i) => `${at(90 - i)} runner: second instance refused`);
+const second = lines => findings(summarize({ gatewayLog: lines.join("\n"), now })).some(x => x.fingerprint === "runner-second-instance");
+assert(!second([...refusals(4), `${at(80)} runner: new instance`, `${at(70)} runner: new instance`]), "refusals around two runner restarts are not a finding");
+assert(second(refusals(4)), "refusals with no takeover are");
+assert(second([...refusals(8), `${at(80)} runner: new instance`]), "many more refusals than one restart explains are");
+assert.equal(summarize({ gatewayLog: `${at(80)} runner: new instance`, now }).gateway.runnerTakeovers, 1);
+
 // A healthy log gives no findings.
 assert.deepEqual(findings(summarize({ gatewayLog: `${at(5)} tool guide ok 3ms`, now })), []);
 

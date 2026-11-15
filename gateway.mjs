@@ -85,7 +85,8 @@ function mark(res) {
   return res;
 }
 
-let logFile = path.join(HERE, "gateway.log");
+// DUET_GATEWAY_LOG moves the log, so a gateway started by a check never writes into the live one.
+let logFile = process.env.DUET_GATEWAY_LOG || path.join(HERE, "gateway.log");
 export const setLogFile = f => { logFile = f; };
 // Set by makeContext when config.json has "alerts": sees every line, to file a GitHub issue when something goes wrong.
 let logHook = null;
@@ -699,10 +700,17 @@ Next: restart the gateway, then run npm run web-login and sign in to the sites D
   }
   if (!cfg.passphraseHash) log("WARNING: no passphrase set, so sign-in is disabled. Run: npm run set-passphrase");
   const ctx = makeContext(cfg);
-  const server = createApp(cfg, ctx).listen(cfg.port, "127.0.0.1", () => log(`listening on 127.0.0.1:${cfg.port}; public ${cfg.publicUrl}/mcp`));
+  // Express calls the listen callback with the error too. A port that is taken (an old gateway still running) must
+  // end this process: it used to log "listening" and stay alive with no port, which looked like a good restart.
+  const started = (what, port, line) => err => {
+    if (!err) return log(line);
+    log(`${what} could not start on 127.0.0.1:${port} (${/^[A-Z_]+$/.test(err.code) ? err.code : "error"}); exiting`);
+    process.exit(1);
+  };
+  const server = createApp(cfg, ctx).listen(cfg.port, "127.0.0.1", started("gateway", cfg.port, `listening on 127.0.0.1:${cfg.port}; public ${cfg.publicUrl}/mcp`));
   // The runner's port is loopback-only and is not published by Tailscale Funnel.
   const runner = ctx.sessions && cfg.claude.runnerToken
-    ? ctx.sessions.runnerApp().listen(cfg.claude.runnerPort || 8788, "127.0.0.1", () => log(`runner port 127.0.0.1:${cfg.claude.runnerPort || 8788}`))
+    ? ctx.sessions.runnerApp().listen(cfg.claude.runnerPort || 8788, "127.0.0.1", started("runner port", cfg.claude.runnerPort || 8788, `runner port 127.0.0.1:${cfg.claude.runnerPort || 8788}`))
     : null;
   ctx.warm().catch(() => {});
   // Watches run on a timer for as long as the gateway is up.

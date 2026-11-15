@@ -6,6 +6,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { makeGuard, makeContext, createApp, hashPassphrase, checkPassphrase, setLogFile } from "./gateway.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-gw-"));
@@ -140,6 +141,17 @@ try {
   assert.ok(tok2.access_token, JSON.stringify(tok2));
   assert.equal((await post(meta.token_endpoint, refreshBody())).status, 400, "refresh rotation");
   assert.equal((await mcpCall(tok2.access_token)).status, 200);
+
+  // A second gateway on a port that is taken exits and says why. It used to log "listening" and stay up with no port.
+  const second = path.join(tmp, "second");
+  fs.mkdirSync(second);
+  fs.writeFileSync(path.join(second, "config.json"), JSON.stringify({ ...cfg, stateFile: undefined }));
+  const dup = spawnSync(process.execPath, [fileURLToPath(new URL("./gateway.mjs", import.meta.url))],
+    { env: { ...process.env, DUET_GATEWAY_CONFIG: path.join(second, "config.json"), DUET_GATEWAY_LOG: path.join(second, "gateway.log") }, timeout: 30_000 });
+  assert.equal(dup.status, 1, String(dup.stderr));
+  const dupLog = fs.readFileSync(path.join(second, "gateway.log"), "utf8");
+  assert.match(dupLog, new RegExp(`gateway could not start on 127\\.0\\.0\\.1:${port} \\(EADDRINUSE\\); exiting`));
+  assert.doesNotMatch(dupLog, /listening on/);
 
   const logged = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8");
   assert.ok(!/hello world|SECRET|correct horse/.test(logged), "log leaks content");

@@ -8,7 +8,7 @@ import fs from "node:fs";
 const MAX_BYTES = 4 << 20; // the tail of each log that is read
 const MAX_SAMPLES = 5, MAX_LINE = 200, SLOW_MS = 30_000;
 // Tools that wait on purpose (session long-polls up to 45 s, explicit waits), so a long call is not slowness.
-export const WAITS = /^(start_session|send_message|read_messages|start_egnyte_session|send_egnyte_message|pc_desktop_wait|web_browser_wait_for)$/;
+export const WAITS = /^(start_session|send_message|read_messages|start_egnyte_session|send_egnyte_message|pc_desktop_wait|web_browser_wait_for|agent_send)$/;
 
 // Reads the last `bytes` of a file; "" when it is missing or unreadable.
 export function tail(file, bytes = MAX_BYTES) {
@@ -47,7 +47,7 @@ const sample = (o, k, line) => { (o[k] ??= []).length < MAX_SAMPLES && o[k].push
 export function summarize({ gatewayLog = "", runnerLog = "", hours = 24, now = Date.now() } = {}) {
   const since = now - hours * 3600_000;
   const tools = {}, durations = {}, upstreams = {}, mcpErrors = {}, other = {}, samples = {};
-  const g = { restarts: 0, loginFailed: 0, loginOk: 0, turnsOk: 0, turnsFailed: 0, runnerRefused: 0, warnings: 0, lines: 0 };
+  const g = { restarts: 0, loginFailed: 0, loginOk: 0, turnsOk: 0, turnsFailed: 0, runnerRefused: 0, runnerTakeovers: 0, warnings: 0, lines: 0 };
   let first = null, last = null;
   for (const raw of gatewayLog.split(/\r?\n/)) {
     const p = parse(raw);
@@ -57,12 +57,12 @@ export function summarize({ gatewayLog = "", runnerLog = "", hours = 24, now = D
     let m;
     if ((m = /^tool (\S+) (.+?) (\d+)ms$/.exec(msg))) {
       const [, name, outcome, ms] = m;
-      const s = (tools[name] ??= { calls: 0, ok: 0, error: 0, refused: {}, upstreamDown: 0, slow: 0 });
+      const s = (tools[name] ??= { calls: 0, ok: 0, error: 0, refused: {}, errorCodes: {}, upstreamDown: 0, slow: 0 });
       s.calls++;
       if (outcome === "ok") s.ok++;
       else if (outcome === "upstream down") s.upstreamDown++;
       else if (outcome.startsWith("refused: ")) bump(s.refused, outcome.slice(9));
-      else s.error++;
+      else { s.error++; if ((m = /^error ([A-Z][A-Z0-9_]{1,39})$/.exec(outcome))) bump(s.errorCodes, m[1]); }
       if (+ms >= SLOW_MS) s.slow++;
       (durations[name] ??= []).push(+ms);
     } else if ((m = /^upstream (\S+) (.*)$/.exec(msg))) {
@@ -75,6 +75,7 @@ export function summarize({ gatewayLog = "", runnerLog = "", hours = 24, now = D
     else if (/^login ok/.test(msg)) g.loginOk++;
     else if ((m = /^session \S+ turn \d+ (ok|failed)$/.exec(msg))) m[1] === "ok" ? g.turnsOk++ : g.turnsFailed++;
     else if (/^runner: second instance refused/.test(msg)) g.runnerRefused++;
+    else if (/^runner: new instance/.test(msg)) g.runnerTakeovers++;
     else if (/^WARNING/.test(msg)) { g.warnings++; sample(samples, "warnings", msg); }
     else if (/error|fail|exception|cannot|refused|timed? ?out/i.test(msg)) {
       const key = scrub(msg).replace(/\b[0-9a-f]{6,}\b/gi, "#").replace(/\d+/g, "N").slice(0, 80);
@@ -112,7 +113,7 @@ export function findings(sum, doctor = []) {
   const out = [];
   const add = (fingerprint, severity, title, detail) => out.push({ fingerprint, severity, title, detail });
   for (const [name, s] of Object.entries(sum.tools)) {
-    if (s.error >= 3 && s.error / s.calls >= 0.2) add(`tool-errors:${name}`, "bug", `${name} fails often`, `${s.error} of ${s.calls} calls returned an error`);
+    if (s.error >= 3 && s.error / s.calls >= 0.2) add(`tool-errors:${name}`, "bug", `${name} fails often`, `${s.error} of ${s.calls} calls returned an error${Object.keys(s.errorCodes).length ? ` (${Object.entries(s.errorCodes).map(([c, n]) => `${c} ×${n}`).join(", ")})` : ""}`);
     if (s.upstreamDown >= 1) add(`tool-upstream-down:${name}`, "problem", `${name} called while its server was down`, `${s.upstreamDown} of ${s.calls} calls`);
     if (!WAITS.test(name) && (s.slow >= 3 || (s.calls >= 5 && s.p95ms >= SLOW_MS))) add(`tool-slow:${name}`, "perf", `${name} is slow`, `p95 ${s.p95ms} ms, max ${s.maxMs} ms, ${s.slow} calls over ${SLOW_MS / 1000} s`);
   }
@@ -124,7 +125,11 @@ export function findings(sum, doctor = []) {
   const perDay = sum.gateway.restarts / Math.max(1, sum.window.hours / 24);
   if (sum.gateway.restarts >= 3 && perDay >= 6) add("gateway-restarts", "problem", "Gateway restarts often", `${sum.gateway.restarts} starts in ${sum.window.hours} h; check for crashes (deploys and config changes also restart it)`);
   if (sum.gateway.turnsFailed >= 2) add("session-turns-failed", "bug", "Claude Code session turns fail", `${sum.gateway.turnsFailed} failed, ${sum.gateway.turnsOk} ok`);
-  if (sum.gateway.runnerRefused >= 3) add("runner-second-instance", "security", "Second runner instance keeps polling", `${sum.gateway.runnerRefused} refusals`);
+  // A runner that restarts is refused while the old instance still counts as alive (30 s; the new one asks every 15 s,
+  // so up to three times) and then takes over, which the log shows as "runner: new instance". Only refusals beyond
+  // that point to a second poller.
+  const expected = 3 * (sum.gateway.runnerTakeovers || 0);
+  if (sum.gateway.runnerRefused >= 3 && sum.gateway.runnerRefused > expected) add("runner-second-instance", "security", "Second runner instance keeps polling", `${sum.gateway.runnerRefused} refusals, ${sum.gateway.runnerTakeovers || 0} runner restarts`);
   if (sum.gateway.loginFailed >= 5) add("login-failures", "security", "Repeated failed sign-ins", `${sum.gateway.loginFailed} failed sign-ins`);
   if (sum.runner.gatewayUnreachable >= 3) add("runner-unreachable", "problem", "Runner cannot reach the gateway", `${sum.runner.gatewayUnreachable} times`);
   if (sum.runner.notDelivered >= 1 || sum.runner.reportFailed >= 1) add("runner-not-delivered", "bug", "Runner answers not delivered", `${sum.runner.notDelivered} not delivered, ${sum.runner.reportFailed} report failures`);

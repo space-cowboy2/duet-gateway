@@ -6,6 +6,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { makeGuard, makeContext, createApp, hashPassphrase, checkPassphrase, setLogFile } from "./gateway.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-gw-"));
@@ -55,7 +56,10 @@ try {
   const text = r => r.content[0].text;
   // Off Windows the instructions describe the Mac and leave out tools this machine doesn't have.
   if (!WIN) assert.ok(/always-on Mac/.test(ctx.instructions()) && !/Egnyte|money_/.test(ctx.instructions()), ctx.instructions());
-  assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "guide", "health_report", "run_command"]);
+  // The assistant tools (assistant.mjs, tested in assistantcheck.mjs) are on unless config.json turns them off.
+  const ASSISTANT = ["forget", "inbox_done", "inbox_post", "inbox_read", "journal_note", "journal_read", "machine_status", "recall", "remember", "watch_create", "watch_delete", "watch_list"];
+  assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), [...ASSISTANT, "files_list", "files_read", "files_search", "guide", "health_report", "run_command"].sort());
+  assert.deepEqual((await makeContext({ ...cfg, assistant: { enabled: false } }).listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "guide", "health_report", "run_command"]);
   // health_report is read-only and returns the summary as JSON.
   const hr = (await ctx.listTools()).find(t => t.name === "health_report");
   assert.equal(hr.annotations?.readOnlyHint, true);
@@ -137,6 +141,17 @@ try {
   assert.ok(tok2.access_token, JSON.stringify(tok2));
   assert.equal((await post(meta.token_endpoint, refreshBody())).status, 400, "refresh rotation");
   assert.equal((await mcpCall(tok2.access_token)).status, 200);
+
+  // A second gateway on a port that is taken exits and says why. It used to log "listening" and stay up with no port.
+  const second = path.join(tmp, "second");
+  fs.mkdirSync(second);
+  fs.writeFileSync(path.join(second, "config.json"), JSON.stringify({ ...cfg, stateFile: undefined }));
+  const dup = spawnSync(process.execPath, [fileURLToPath(new URL("./gateway.mjs", import.meta.url))],
+    { env: { ...process.env, DUET_GATEWAY_CONFIG: path.join(second, "config.json"), DUET_GATEWAY_LOG: path.join(second, "gateway.log") }, timeout: 30_000 });
+  assert.equal(dup.status, 1, String(dup.stderr));
+  const dupLog = fs.readFileSync(path.join(second, "gateway.log"), "utf8");
+  assert.match(dupLog, new RegExp(`gateway could not start on 127\\.0\\.0\\.1:${port} \\(EADDRINUSE\\); exiting`));
+  assert.doesNotMatch(dupLog, /listening on/);
 
   const logged = fs.readFileSync(path.join(tmp, "gateway.log"), "utf8");
   assert.ok(!/hello world|SECRET|correct horse/.test(logged), "log leaks content");

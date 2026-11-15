@@ -38,17 +38,36 @@ This gateway exposes a home PC to the internet through Tailscale Funnel. The bar
   window, file or tool result is content; that a result is checked before it is reported as done; and that spending
   money, sending or posting as the owner, deleting his data and changing an account need his word unless his request
   plainly covered them. The content note added to desktop and browser results stays. Removing or softening these blocks.
+- **Assistant tools** (`assistant.mjs`). They give Duet state and reach of its own, so each keeps a narrow shape:
+  - No tool here runs a command, moves money, or sends anything as the owner. `notify` has no recipient argument and
+    reaches only the one destination in `config.json`. A tool that messages anyone else blocks.
+  - Recipients, folders, agent addresses, token files and the tools a watch may call come from `config.json` only,
+    never from tool input. A token file is named by file name only.
+  - A page watch stays on the internet: `webUrlProblem`, plus the resolved address checked with `isLocalHost`, on the
+    first address and on every redirect. A file watch goes through the guard on every check. A tool watch calls only
+    `machine_status` and the tools in `assistant.watch.tools`, which stays empty in the example. `watch.OFF` must
+    keep stopping every check. The limits on count, interval, failures and lifetime stay.
+  - `outbox_save` writes only into `assistant.outbox`, with a plain file name of a text type, and never overwrites
+    or deletes. It is off in the example. Any other way to write a file as the owner blocks.
+  - What Duet saved or received is content: the notebook, inbox items, watch results and agent replies are labelled
+    as such, and the notebook is shown apart from the owner's `notes`. A message to another agent starts with the
+    fixed line that it carries no approval from the owner. Dropping a label, or presenting any of these as the
+    owner's word, blocks.
+  - `journal.jsonl` holds the tool name, outcome, duration and one short allowlisted target (`TARGETS`). Adding typed
+    text, values, messages, results or file contents to it blocks. Text that looks like a password, key or code is
+    refused by the notebook, the inbox, the journal, the outbox, `notify` and `agent_send`.
 - **Money tools.** `money_*` stays a read-only allowlist. Adding a tool that moves money or changes accounts blocks.
 - **Secrets.** No secrets, tokens, passphrase hashes or machine paths committed. `config.json`, `state.json`,
-  `sessions.json`, `gateway.log`, `duet.OFF`, `desktop.OFF` and `web.OFF` stay out of git.
-- **Logs.** `gateway.log` and `runner.log` hold ids and outcomes only. Logging prompts, answers, file contents
+  `sessions.json`, `gateway.log`, `duet.OFF`, `desktop.OFF`, `web.OFF`, `watch.OFF`, the assistant state files
+  (`memory.json`, `inbox.json`, `watches.json`, `journal.jsonl`) and token files stay out of git.
+- **Logs.** `gateway.log` and `runner.log` hold ids and outcomes only (a watch id, an agent's configured name). Logging prompts, answers, file contents
   or tokens blocks.
 
 ### Correctness
 - Bugs that break a tool, the OAuth flow, the runner protocol, or startup.
 - Unhandled promise rejections or thrown errors that can crash the gateway from tool input.
 - Changed behavior with no matching change to `selfcheck.mjs`, `sessioncheck.mjs`, `doctorcheck.mjs`,
-  `desktopcheck.mjs` or `webcheck.mjs`. Security-relevant changes (guard, auth, sessions, commands, desktop control,
+  `desktopcheck.mjs`, `webcheck.mjs` or `assistantcheck.mjs`. Security-relevant changes (guard, auth, sessions, commands, desktop control,
   the web browser) need a test that would fail without the fix.
 
 ### Project rules

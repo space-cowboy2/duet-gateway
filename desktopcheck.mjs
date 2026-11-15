@@ -5,7 +5,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { makeContext, setLogFile, setUpstreamStartMs } from "./gateway.mjs";
+import { errorCode, makeContext, setLaunchProbe, setLogFile, setUpstreamStartMs } from "./gateway.mjs";
+import { MAX_LAUNCH_MS, launchArgs, parseShortcut, resolveLaunch, splitArgs } from "./launch.mjs";
+
+// A failed upstream call is logged with its error code only (never the message), and only if it is a plain code.
+const errRes = text => ({ isError: true, content: [{ type: "text", text }] });
+assert.equal(errorCode(errRes('{"error":{"code":"TIMEOUT","message":"waited for C:\\\\Users\\\\x"}}')), "TIMEOUT");
+assert.equal(errorCode(errRes('{"code":"AMBIGUOUS_TARGET"}')), "AMBIGUOUS_TARGET");
+for (const bad of ["plain text failure", '{"error":{"code":"sk-ant-secret value"}}', '{"error":{"code":"lower"}}', '{"error":{"code":7}}', "{"])
+  assert.equal(errorCode(errRes(bad)), null, bad);
+assert.equal(errorCode({ isError: true }), null);
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "duet-desk-"));
 const logFile = path.join(tmp, "gateway.log");
@@ -25,13 +34,15 @@ import { StdioServerTransport } from "${sdk("server/stdio.js")}";
 import { ListToolsRequestSchema, CallToolRequestSchema } from "${sdk("types.js")}";
 const server = new Server({ name: "fake-desktop", version: "0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: ["desktop_list_windows", "desktop_screenshot", "desktop_clipboard_get", "desktop_skills_get", "desktop_find"]
+  tools: ["desktop_list_windows", "desktop_screenshot", "desktop_clipboard_get", "desktop_skills_get", "desktop_find", "desktop_launch"]
     .map(name => ({ name, description: name, inputSchema: { type: "object" }, ...(name !== "desktop_screenshot" && { outputSchema: { type: "object" } }) })),
 }));
 // Like agent-desktop: the JSON comes twice, as a text block and as structuredContent. desktop_find sends only the second.
 // Every tool but the screenshot promises that structuredContent (agent-desktop promises none; a later version may).
-server.setRequestHandler(CallToolRequestSchema, async ({ params: { name } }) => {
+server.setRequestHandler(CallToolRequestSchema, async ({ params: { name, arguments: args } }) => {
   fs.appendFileSync(process.env.FAKE_CALLS, name + "\\n");
+  // launch answers with the arguments it was given, so the check can see what the gateway passed on
+  if (name === "desktop_launch") return { content: [{ type: "text", text: JSON.stringify({ got: args }) }] };
   if (name === "desktop_screenshot") return { content: [{ type: "image", mimeType: "image/png", data: "iVBO" }] };
   const data = { command: name, ok: true };
   return { content: name === "desktop_find" ? [] : [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
@@ -149,6 +160,66 @@ try {
   assert.equal(calls("desktop_screenshot"), 1);
   fs.rmSync(off);
 
+  // ---- launch: the name Duet gives becomes a program agent-desktop can start (issue #17) ----
+  // A made-up Windows machine: two system programs, one program registered in App Paths, and three Start Menu shortcuts.
+  const lnk = (target, args = "") => {
+    const head = Buffer.alloc(76); head.writeUInt32LE(0x4c, 0); head.writeUInt32LE(0x02 | 0x80 | (args ? 0x20 : 0), 20); // has link info, unicode strings
+    const base = Buffer.from(target + "\0", "latin1"), info = Buffer.alloc(28 + base.length + 1);
+    info.writeUInt32LE(info.length, 0); info.writeUInt32LE(28, 4); info.writeUInt32LE(1, 8); info.writeUInt32LE(28, 16); info.writeUInt32LE(28 + base.length, 24);
+    base.copy(info, 28);
+    const str = t => { const b = Buffer.alloc(2 + t.length * 2); b.writeUInt16LE(t.length, 0); b.write(t, 2, "utf16le"); return b; };
+    return Buffer.concat([head, info, ...(args ? [str(args)] : [])]);
+  };
+  assert.deepEqual(parseShortcut(lnk("C:\\Apps\\Steam\\steam.exe")), { target: "C:\\Apps\\Steam\\steam.exe", args: "" });
+  assert.deepEqual(parseShortcut(lnk("C:\\Apps\\Discord\\Update.exe", '--processStart "Discord App.exe"')), { target: "C:\\Apps\\Discord\\Update.exe", args: '--processStart "Discord App.exe"' });
+  for (const bad of [Buffer.alloc(0), Buffer.from("not a shortcut at all, just some text that is long enough to pass the size check........"), lnk("relative\\x.exe"), lnk("C:\\x.exe").subarray(0, 90)])
+    assert.equal(parseShortcut(bad), null);
+  assert.deepEqual(splitArgs('--processStart "Discord App.exe" -x'), ["--processStart", "Discord App.exe", "-x"]);
+  const disk = new Set(["C:\\Windows\\System32\\calc.exe", "C:\\Windows\\notepad.exe", "C:\\Program Files\\Edge\\msedge.exe", "C:\\Apps\\Steam\\steam.exe", "C:\\Apps\\Discord\\Update.exe"]);
+  const links = { "S:\\Steam.lnk": lnk("C:\\Apps\\Steam\\steam.exe"), "S:\\Discord.lnk": lnk("C:\\Apps\\Discord\\Update.exe", "--processStart Discord.exe"),
+    "S:\\Notepad++.lnk": lnk("C:\\Apps\\npp\\gone.exe"), "S:\\Read Me.lnk": lnk("C:\\Apps\\readme.txt") };
+  const asked = [];
+  const probe = {
+    systemDirs: ["C:\\Windows\\System32", "C:\\Windows"], exists: p => disk.has(p),
+    appPath: async name => { asked.push(name); return name.toLowerCase() === "msedge" ? "C:\\Program Files\\Edge\\msedge.exe" : null; },
+    shortcuts: () => Object.keys(links).map(file => ({ name: file.slice(3, -4), file })), readShortcut: file => parseShortcut(links[file]),
+  };
+  const resolved = async app => { const r = await resolveLaunch(app, probe); return [r.app, r.how, ...(r.args ? [r.args] : [])]; };
+  assert.deepEqual(await resolved("calc"), ["calc", "system"]);
+  assert.deepEqual(await resolved("Calculator"), ["calc", "system"]);
+  assert.deepEqual(await resolved("notepad.exe"), ["notepad", "system"]);
+  assert.deepEqual(await resolved("Microsoft Edge"), ["C:\\Program Files\\Edge\\msedge.exe", "app-path"]);
+  assert.deepEqual(await resolved("D:\\Tools\\x.exe"), ["D:\\Tools\\x.exe", "path"]); // a full path goes through as it is
+  assert.deepEqual(await resolved("steam"), ["C:\\Apps\\Steam\\steam.exe", "shortcut"]);
+  assert.deepEqual(await resolved("Discord"), ["C:\\Apps\\Discord\\Update.exe", "shortcut", ["--processStart", "Discord.exe"]]);
+  // Nothing by that name: an APP_NOT_FOUND with the close matches, and no guess. A shortcut to a missing or non-program target is not used.
+  for (const [app, hint] of [["Notepad+", /Close matches in the Start Menu: Notepad\+\+/], ["read me", /Close matches in the Start Menu: Read Me/], ["zzz", /No app named "zzz"/], ["..\\x", /No app named/], ["", /No app named/]])
+    await assert.rejects(resolveLaunch(app, probe), e => e.code === "APP_NOT_FOUND" && e.launch === true && hint.test(e.message), app);
+  // A name is never put into the registry lookup unless it is a plain program name.
+  await assert.rejects(resolveLaunch('x" /s & calc', probe));
+  assert.ok(asked.every(n => /^[\w][\w .+-]*$/.test(n)), asked.join());
+  // The caller's own arguments win over a shortcut's, and the time limit is capped.
+  assert.deepEqual(await launchArgs({ app: "Discord", args: ["--x"], timeout: 500_000 }, probe), { app: "C:\\Apps\\Discord\\Update.exe", args: ["--x"], timeout: MAX_LAUNCH_MS });
+  assert.deepEqual(await launchArgs({ app: "Calculator", activate: true }, probe), { app: "calc", activate: true });
+
+  // Through the gateway: the resolved program reaches agent-desktop, an unknown name never does, and the log has the code only.
+  const launcher = await newCtx({ ...pc, allow: [...names, "desktop_launch"] });
+  setLaunchProbe(probe);
+  reset();
+  const sentTo = async app => JSON.parse((await launcher.callTool("pc_desktop_launch", { app })).content[0].text).got;
+  assert.deepEqual(await sentTo("Calculator"), { app: "calc" });
+  assert.deepEqual(await sentTo("steam"), { app: "C:\\Apps\\Steam\\steam.exe" });
+  const none = await launcher.callTool("pc_desktop_launch", { app: "Secret Budget App" });
+  assert.equal(none.isError, true);
+  assert.match(none.content[0].text, /No app named "Secret Budget App" was found on the PC\. Nothing was started\./);
+  assert.equal(calls("desktop_launch"), 2);
+  assert.match(fs.readFileSync(logFile, "utf8"), /tool pc_desktop_launch error APP_NOT_FOUND \d+ms/);
+  assert.doesNotMatch(fs.readFileSync(logFile, "utf8"), /Secret Budget/);
+  // Without a probe (a Mac, where agent-desktop takes app names itself) the name goes through untouched.
+  setLaunchProbe(null);
+  assert.deepEqual(await sentTo("Calculator"), { app: "Calculator" });
+  setLaunchProbe(process.platform === "win32" ? undefined : null);
+
   // the log has the tool name and the refusal kind; the desktop instructions appear only with a desktop upstream
   const logged = fs.readFileSync(logFile, "utf8");
   for (const kind of ["desktop\\.OFF", "output_path"])
@@ -212,6 +283,14 @@ try {
   await warmed.warm();
   assert.match(warmed.instructions(), /FAKE TV INSTRUCTIONS$/);
   assert.match(await guideOf(warmed), /^- TV \(tv_\*\): on, 2 tools$/m);
+
+  // The older TV server (get_notes, play_youtube, no get_guide): the line names the tool that server really has.
+  const oldTv = path.join(tmp, "old-tv.mjs");
+  fs.writeFileSync(oldTv, fs.readFileSync(fakeTv, "utf8").replace('["play", "get_guide"]', '["play_youtube", "get_notes"]'));
+  const older = make({ prefix: "tv", command: process.execPath, args: [oldTv] });
+  await older.warm();
+  assert.match(older.instructions(), /tv_get_notes before the first TV request and follow the TV server's own instructions below\./);
+  assert.doesNotMatch(older.instructions(), /tv_get_guide/);
 
   // An upstream that is switched off in config.json is named as that, not as missing.
   assert.match(await guideOf(make({ prefix: "tv", enabled: false, command: "x" })), new RegExp(`^- TV: switched off in config\\.json on the ${PC}\\n- Bank balances: not set up on this ${PC}$`, "m"));

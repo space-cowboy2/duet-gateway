@@ -10,6 +10,9 @@ const MAX_SAMPLES = 5, MAX_LINE = 200, SLOW_MS = 30_000;
 // Tools that wait on purpose (session long-polls up to 45 s, explicit waits), so a long call is not slowness.
 export const WAITS = /^(start_session|send_message|read_messages|start_egnyte_session|send_egnyte_message|pc_desktop_wait|web_browser_wait_for)$/;
 
+// Explicit waits end in a timeout error when the thing they wait for never shows up. That is their normal answer, not a fault.
+export const TIMEOUT_WAITS = /^(pc_desktop_wait|web_browser_wait_for)$/;
+
 // Reads the last `bytes` of a file; "" when it is missing or unreadable.
 export function tail(file, bytes = MAX_BYTES) {
   let fd;
@@ -112,7 +115,7 @@ export function findings(sum, doctor = []) {
   const out = [];
   const add = (fingerprint, severity, title, detail) => out.push({ fingerprint, severity, title, detail });
   for (const [name, s] of Object.entries(sum.tools)) {
-    if (s.error >= 3 && s.error / s.calls >= 0.2) add(`tool-errors:${name}`, "bug", `${name} fails often`, `${s.error} of ${s.calls} calls returned an error`);
+    if (!TIMEOUT_WAITS.test(name) && s.error >= 3 && s.error / s.calls >= 0.2) add(`tool-errors:${name}`, "bug", `${name} fails often`, `${s.error} of ${s.calls} calls returned an error`);
     if (s.upstreamDown >= 1) add(`tool-upstream-down:${name}`, "problem", `${name} called while its server was down`, `${s.upstreamDown} of ${s.calls} calls`);
     if (!WAITS.test(name) && (s.slow >= 3 || (s.calls >= 5 && s.p95ms >= SLOW_MS))) add(`tool-slow:${name}`, "perf", `${name} is slow`, `p95 ${s.p95ms} ms, max ${s.maxMs} ms, ${s.slow} calls over ${SLOW_MS / 1000} s`);
   }

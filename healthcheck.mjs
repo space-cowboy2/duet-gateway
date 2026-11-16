@@ -72,6 +72,8 @@ for (const fp of ["tool-errors:files_read", "tool-upstream-down:money_get_balanc
 assert(f.find(x => x.fingerprint === "tool-errors:pc_desktop_launch").detail.includes("TIMEOUT ×2"), "finding names the codes");
 assert(fps.some(x => x.startsWith("mcp-error:")));
 assert(fps.some(x => x.startsWith("log-error:something exploded")), "repeated unknown errors group into one finding");
+const waitLog = Array.from({ length: 5 }, (_, i) => `${at(10 + i)} tool pc_desktop_wait error 30000ms`).join("\n");
+assert(!findings(summarize({ gatewayLog: waitLog, now })).some(x => x.fingerprint === "tool-errors:pc_desktop_wait"), "an explicit wait timing out is not a failure");
 assert(!fps.includes("tool-slow:read_messages"), "long-poll waits are not slowness");
 assert(!fps.includes("gateway-restarts"), "one restart a day is not a finding");
 const restarts = Array.from({ length: 8 }, (_, i) => `${at(100 - i)} listening on 127.0.0.1:8787`).join("\n");

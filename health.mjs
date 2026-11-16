@@ -57,12 +57,12 @@ export function summarize({ gatewayLog = "", runnerLog = "", hours = 24, now = D
     let m;
     if ((m = /^tool (\S+) (.+?) (\d+)ms$/.exec(msg))) {
       const [, name, outcome, ms] = m;
-      const s = (tools[name] ??= { calls: 0, ok: 0, error: 0, refused: {}, upstreamDown: 0, slow: 0 });
+      const s = (tools[name] ??= { calls: 0, ok: 0, error: 0, refused: {}, errorCodes: {}, upstreamDown: 0, slow: 0 });
       s.calls++;
       if (outcome === "ok") s.ok++;
       else if (outcome === "upstream down") s.upstreamDown++;
       else if (outcome.startsWith("refused: ")) bump(s.refused, outcome.slice(9));
-      else s.error++;
+      else { s.error++; if ((m = /^error ([A-Z][A-Z0-9_]{1,39})$/.exec(outcome))) bump(s.errorCodes, m[1]); }
       if (+ms >= SLOW_MS) s.slow++;
       (durations[name] ??= []).push(+ms);
     } else if ((m = /^upstream (\S+) (.*)$/.exec(msg))) {
@@ -112,7 +112,7 @@ export function findings(sum, doctor = []) {
   const out = [];
   const add = (fingerprint, severity, title, detail) => out.push({ fingerprint, severity, title, detail });
   for (const [name, s] of Object.entries(sum.tools)) {
-    if (s.error >= 3 && s.error / s.calls >= 0.2) add(`tool-errors:${name}`, "bug", `${name} fails often`, `${s.error} of ${s.calls} calls returned an error`);
+    if (s.error >= 3 && s.error / s.calls >= 0.2) add(`tool-errors:${name}`, "bug", `${name} fails often`, `${s.error} of ${s.calls} calls returned an error${Object.keys(s.errorCodes).length ? ` (${Object.entries(s.errorCodes).map(([c, n]) => `${c} ×${n}`).join(", ")})` : ""}`);
     if (s.upstreamDown >= 1) add(`tool-upstream-down:${name}`, "problem", `${name} called while its server was down`, `${s.upstreamDown} of ${s.calls} calls`);
     if (!WAITS.test(name) && (s.slow >= 3 || (s.calls >= 5 && s.p95ms >= SLOW_MS))) add(`tool-slow:${name}`, "perf", `${name} is slow`, `p95 ${s.p95ms} ms, max ${s.maxMs} ms, ${s.slow} calls over ${SLOW_MS / 1000} s`);
   }

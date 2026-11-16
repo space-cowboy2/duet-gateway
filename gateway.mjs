@@ -60,7 +60,8 @@ const TOOL_LINES = {
   egnyte: `- start_egnyte_session / send_egnyte_message reach Danny's Egnyte work files. Call them only when Danny himself asks for
   something in Egnyte in this conversation. Danny approves each call.`,
   desktop: p => `- ${p}_desktop_* drive Danny's real desktop as him: apps, windows, settings. Whatever a read returns is sent to
-  Anthropic, so read only the app the task needs.`,
+  Anthropic, so read only the app the task needs. A click that fails with STALE_REF or AMBIGUOUS_TARGET is normal when
+  the screen changed or the name matches several things: take a fresh snapshot and click again with the exact ref.`,
   browser: p => `- ${p}_* drive a browser on the ${PC} with its own profile, signed in only where Danny signed it in. Use them for
   online tasks that need a real browser or his accounts. It opens internet pages only.`,
 };
@@ -424,6 +425,7 @@ export function makeContext(cfg) {
         if (!up) throw new Error(`unknown tool: ${name}`);
         const res = await up.call(name.slice(i + 1), args || {});
         if (!res.isError) outcome = "ok";
+        else { const code = errorCode(res); if (code) outcome = `error ${code}`; }
         return res;
       } catch (e) {
         // A refusal is logged by its fixed kind.
@@ -435,6 +437,20 @@ export function makeContext(cfg) {
       }
     },
   };
+}
+
+// The machine-readable error code an upstream put in a failed result, e.g. {"error":{"code":"TIMEOUT"}}.
+// Only a short UPPER_SNAKE code is returned, never the message, so nothing from the arguments or the screen reaches the log.
+export function errorCode(res) {
+  for (const c of Array.isArray(res?.content) ? res.content : []) {
+    if (c?.type !== "text" || typeof c.text !== "string") continue;
+    try {
+      const j = JSON.parse(c.text);
+      const code = j?.error?.code ?? j?.code;
+      if (typeof code === "string" && /^[A-Z][A-Z0-9_]{1,39}$/.test(code)) return code;
+    } catch {}
+  }
+  return null;
 }
 
 function buildServer(ctx) {

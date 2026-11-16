@@ -154,6 +154,7 @@ try {
   for (const kind of ["desktop\\.OFF", "output_path"])
     assert.match(logged, new RegExp(`tool pc_desktop_screenshot refused: ${kind} \\d+ms`), kind);
   assert.match(ctx.instructions(), /pc_desktop_\*/);
+  assert.match(ctx.instructions(), /STALE_REF or AMBIGUOUS_TARGET[^]*fresh snapshot/);
   assert.doesNotMatch(tv.instructions(), /pc_desktop_/);
 
   // ---- upstream health ----

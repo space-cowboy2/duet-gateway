@@ -255,7 +255,7 @@ class Upstream {
   constructor(spec, dir) {
     Object.assign(this, spec); this.dir = dir; this.client = null; this.connecting = null;
     // down: why the server did not answer the last time it was asked (null when it did). count: tools it listed.
-    this.down = null; this.count = null; this.said = null; this.names = null;
+    this.down = null; this.count = null; this.said = null; this.names = null; this.cache = null;
     this.browser = isBrowser(spec);
     const desktop = /agent-desktop/i.test(path.win32.basename(String(spec.command)));
     // Fail closed at startup: agent-desktop or a browser without an allowlist or an off switch would expose every tool
@@ -271,7 +271,7 @@ class Upstream {
     if (this.client) return Promise.resolve(this.client);
     this.connecting ??= (async () => {
       const client = new Client({ name: "duet-gateway", version: VERSION });
-      client.onclose = () => { if (this.client === client) this.client = null; };
+      client.onclose = () => { if (this.client === client) { this.client = null; this.cache = null; } };
       // On Windows a missing program is first seen as a child that exits: the spawn error (ENOENT) arrives through
       // onerror, and connect() itself only fails with "connection closed". The spawn error is the better reason.
       let spawnErr = null;
@@ -280,7 +280,7 @@ class Upstream {
         await client.connect(new StdioClientTransport({ command: this.command, args: this.args, env: process.env, stderr: "ignore" }), { timeout: upStartMs });
       } catch (e) {
         this.down = whyDown(spawnErr || e, this.command);
-        this.count = null;
+        this.count = null; this.cache = null;
         client.close().catch(() => {});
         throw e;
       }
@@ -291,10 +291,12 @@ class Upstream {
     return this.connecting;
   }
   async tools() {
+    // The list is kept for 60 s, so each tools/list request does not ask every upstream again.
+    if (this.client && this.cache && this.cache.until > Date.now()) return this.cache.mine;
     const client = await this.get();
     let tools;
     try { ({ tools } = await client.listTools(undefined, { timeout: upStartMs })); }
-    catch (e) { this.down = whyDown(e, this.command); this.count = null; throw e; }
+    catch (e) { this.down = whyDown(e, this.command); this.count = null; this.cache = null; throw e; }
     const mine = tools.filter(t => !this.allow || this.allow.includes(t.name))
       // A result that gets the note loses its structuredContent (see mark), so its tool may not promise one.
       .map(({ outputSchema, ...t }) => ({
@@ -303,6 +305,7 @@ class Upstream {
         ...(this.readOnly && { annotations: this.readOnly.includes(t.name) ? { readOnlyHint: true } : { readOnlyHint: false, destructiveHint: true } }),
       }));
     this.down = null; this.count = mine.length; this.names = tools.map(t => t.name);
+    this.cache = { mine, until: Date.now() + 60_000 };
     return mine;
   }
   // One line for the guide tool.
@@ -333,7 +336,7 @@ class Upstream {
   }
   // Results that get the content note: all from the desktop or the browser, bar agent-desktop's own answers.
   marks(name) { return !!this.offFile && !NO_CONTENT.test(name); }
-  close() { return this.client?.close(); }
+  close() { this.cache = null; return this.client?.close(); }
 }
 
 export function makeContext(cfg) {

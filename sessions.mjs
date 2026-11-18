@@ -42,7 +42,7 @@ const MACHINE = cfg => cfg.machineName || (WIN ? "Danny's PC" : "Danny's Mac");
 export function makeSessions(cfg, log) {
   const cc = cfg.claude || {};
   const machine = MACHINE(cfg), here = WIN ? "the PC" : "the Mac";
-  const setupScript = WIN ? "setup-agent.ps1" : "setup-agent-mac.sh";
+  const setupScript = WIN ? "setup-agent.ps1" : "the agent setup";
   const file = path.join(path.dirname(cfg.stateFile), "sessions.json");
   const offFile = path.join(path.dirname(cfg.stateFile), "duet.OFF");
   const workspaces = cc.workspaces || {};

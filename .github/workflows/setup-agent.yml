@@ -1,6 +1,9 @@
 name: setup-agent
 on:
   push:
+    paths:
+      - setup-agent.ps1
+      - .github/workflows/setup-agent.yml
   workflow_dispatch:
 
 # Runs setup-agent.ps1 for real on a throwaway Windows machine (GitHub's runners are elevated):

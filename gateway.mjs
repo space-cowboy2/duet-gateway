@@ -653,7 +653,7 @@ async function main() {
     return;
   }
   if (process.argv[2] === "set-runner") {
-    // Called by setup-agent.ps1 (and setup-agent-mac.sh): node gateway.mjs set-runner <runner token file> <claude.exe> <workspace folder>...
+    // Called by setup-agent.ps1: node gateway.mjs set-runner <runner token file> <claude.exe> <workspace folder>...
     const [tokenFile, exe, ...folders] = process.argv.slice(3);
     const raw = JSON.parse(fs.readFileSync(cfg.file, "utf8"));
     raw.claude = {

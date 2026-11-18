@@ -37,21 +37,34 @@ jobs:
       issues: write
       id-token: write
     steps:
+      # Nothing to fix without an open issue labelled monitor: skip the rest of the run.
+      - name: Look for an open monitor issue
+        id: open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh issue list --repo "${{ github.repository }}" --label monitor --state open --json number --jq 'length')
+          echo "count=$n" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v6
+        if: steps.open.outputs.count != '0'
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v6
+        if: steps.open.outputs.count != '0'
         with:
           node-version: 22
           cache: npm
       - run: npm ci
+        if: steps.open.outputs.count != '0'
       - name: Commit identity
+        if: steps.open.outputs.count != '0'
         run: |
           git config user.name "Fixer agent"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Fix the issue
         id: fix
+        if: steps.open.outputs.count != '0'
         uses: anthropics/claude-code-action@v1
         with:
           show_full_output: true
@@ -88,7 +101,7 @@ jobs:
 
       # So a run never ends silently: if the issue got neither a PR nor a Fixer agent comment, say so on the issue.
       - name: Report a run that left nothing behind
-        if: always() && github.event.issue.number
+        if: always() && github.event.issue.number && steps.open.outputs.count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

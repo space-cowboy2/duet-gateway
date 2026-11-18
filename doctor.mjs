@@ -15,7 +15,7 @@ import { BROWSER_UNSAFE, everydayFlags, isBrowser, refusedFlags } from "./web.mj
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const AGENT_DIR = "C:\\ProgramData\\duet-agent"; // where setup-agent.ps1 installs the runner
 export const TASK = "duet-agent-runner";
-export const MAC_AGENT_DIR = "/Library/Application Support/duet-agent"; // where setup-agent-mac.sh installs it
+export const MAC_AGENT_DIR = "/Library/Application Support/duet-agent"; // the macOS runner folder, used when the doctor runs on a Mac
 export const DAEMON = "com.duet-agent.runner";
 export const DAEMON_PLIST = `/Library/LaunchDaemons/${DAEMON}.plist`;
 const AGENT_USER = "duet-agent";
@@ -47,7 +47,7 @@ exit 0`;
 // Microsoft.PowerShell.Security it cannot load. PSModulePath is dropped from its environment for the same reason.
 export const ownerArgs = () => ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(OWNER_PS, "utf16le").toString("base64")];
 
-// Whether `ls -lde` output has an ACL entry that denies `user` both list and search, as setup-agent-mac.sh adds to the
+// Whether `ls -lde` output has an ACL entry that denies `user` both list and search, as the agent setup adds to the
 // home folder. Without search nothing inside the folder can be reached by path.
 export const deniesUser = (acl, user) => String(acl).split("\n").some(l => {
   const m = /^\s*\d+:\s+user:(\S+)\s+(?:inherited\s+)?deny\s+(\S+)/.exec(l);
@@ -127,14 +127,14 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
   const add = (level, check, detail) => out.push({ level, check, detail });
   const win = probe.platform === "win32", mac = probe.platform === "darwin";
   agentDir ??= mac ? MAC_AGENT_DIR : AGENT_DIR;
-  const setup = mac ? "sudo ./setup-agent-mac.sh" : "setup-agent.ps1";
+  const setup = mac ? "the agent setup" : "setup-agent.ps1";
 
   let cfg;
   try { cfg = JSON.parse(probe.readFile(file)); }
   catch (e) {
     // JSON.parse messages quote the config text around the error, so only the position is shown.
     const where = /position \d+( \(line \d+ column \d+\))?/.exec(e.message)?.[0];
-    add("fail", "config", e.code === "ENOENT" ? `${file} not found (copy ${mac ? "config.example.mac.json" : "config.example.json"})`
+    add("fail", "config", e.code === "ENOENT" ? `${file} not found (copy config.example.json)`
       : e instanceof SyntaxError ? `${file} is not valid JSON${where ? ` (${where})` : ""}` : `${file} unreadable (${e.code || "error"})`);
     return out;
   }
@@ -234,7 +234,7 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
   const port = cfg.port;
   if (!Number.isInteger(port) || port < 1 || port > 65535) add("fail", "gateway port", `port is not set in config.json (normally ${mac ? 8790 : 8787})`);
   else add(...(await probe.port(port) ? ["ok", "gateway port", `127.0.0.1:${port} answers`]
-    : ["fail", "gateway port", `nothing answers on 127.0.0.1:${port}: start the gateway (${mac ? "./gateway-launchd.sh" : "npm start"})`]));
+    : ["fail", "gateway port", `nothing answers on 127.0.0.1:${port}: start the gateway (npm start)`]));
 
   if (!cc) { add("warn", "claude", "no claude section, so Claude Code sessions are off"); return out; }
 
@@ -252,7 +252,7 @@ export async function diagnose({ file = process.env.DUET_GATEWAY_CONFIG || path.
       : ["fail", "runnerToken", `does not match ${tokenFile}: run ${setup} again`]));
   }
 
-  // macOS puts every local user in staff, which can read most home folders. The deny entry setup-agent-mac.sh adds to
+  // macOS puts every local user in staff, which can read most home folders. The deny entry the agent setup adds to
   // Danny's home folder is what keeps duet-agent out of it, so its loss is a fail.
   if (mac && cc.runnerToken) {
     const home = probe.home(), acl = await probe.acl(home);

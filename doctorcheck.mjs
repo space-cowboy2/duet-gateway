@@ -231,13 +231,13 @@ const run = async (probe, opts = {}) => {
 
   // Problems are reported with the Mac's own fixes, never the Windows ones.
   ({ text, by } = await runMac(mac({ claude: { runnerToken: "" } }, { ports: [] })));
-  assert.match(by("runnerToken").detail, /run sudo \.\/setup-agent-mac\.sh/);
-  assert.match(by("gateway port").detail, /gateway-launchd\.sh/);
+  assert.match(by("runnerToken").detail, /run the agent setup/);
+  assert.match(by("gateway port").detail, /npm start/);
   assert.ok(!text.includes("home folder"), "no sessions set up, so no home folder line");
   assert.doesNotMatch(text, /\.ps1|ScheduledTask|elevated/);
   const noRead = mac(); noRead.readFile = (f => x => { if (x.endsWith("runner-token")) throw new Error("EACCES"); return f(x); })(noRead.readFile);
   assert.match((await runMac(noRead)).by("runnerToken").detail, /not readable here.*sudo npm run doctor can/);
-  assert.match((await runMac(fakeProbe({ platform: "darwin" }))).r[0].detail, /copy config\.example\.mac\.json/);
+  assert.match((await runMac(fakeProbe({ platform: "darwin" }))).r[0].detail, /copy config\.example\.json/);
 
   // A TV upstream on a Mac is checked the same way, and a stopped hub points at the TV project's setup notes, not a .ps1.
   const tvMac = mac({ upstreams: [{ prefix: "tv", command: P("bin", "python3"), args: [P("tv", "tv_mcp.py")] }] });
@@ -250,7 +250,7 @@ const run = async (probe, opts = {}) => {
   // The runner: not installed, installed but down, and another duet-agent process that only mentions runner.mjs.
   const noPlist = mac(); noPlist.exists = (f => x => path.resolve(x) !== path.resolve(DAEMON_PLIST) && f(x))(noPlist.exists);
   assert.deepEqual([(await runMac(noPlist)).by("runner daemon").level, (await runMac(noPlist)).by("runner daemon").detail],
-    ["warn", "com.duet-agent.runner is not installed (run sudo ./setup-agent-mac.sh)"]);
+    ["warn", "com.duet-agent.runner is not installed (run the agent setup)"]);
   for (const commands of [[], null, [`cat ${M("bin", "runner.mjs")} -`, "-zsh"]]) {
     ({ by } = await runMac(mac({}, { commands })));
     assert.equal(by("runner daemon").level, "warn"); assert.match(by("runner daemon").detail, /not running: sudo launchctl kickstart -k system\/com\.duet-agent\.runner$/);
@@ -258,7 +258,7 @@ const run = async (probe, opts = {}) => {
 
   // The home folder's deny entry: gone is a fail, unreadable a warn.
   ({ by, fails } = await runMac(mac({}, { acl: ACL.replace(/^ 0:.*\n/m, "") })));
-  assert.deepEqual(fails, ["home folder"]); assert.match(by("home folder").detail, /no deny entry for duet-agent.*setup-agent-mac\.sh/);
+  assert.deepEqual(fails, ["home folder"]); assert.match(by("home folder").detail, /no deny entry for duet-agent.*the agent setup/);
   assert.equal((await runMac(mac({}, { acl: null }))).by("home folder").level, "warn");
   assert.equal(deniesUser(ACL, "duet-agent"), true);
   assert.equal(deniesUser(ACL, "duet"), false);
@@ -388,7 +388,7 @@ const run = async (probe, opts = {}) => {
       assert.equal(await real.commands("no-such-user-" + process.pid), null);
     } finally { child.kill(); }
   }
-  // The home folder check reads a real ACL: the entry setup-agent-mac.sh adds, here for "nobody" on a temp folder.
+  // The home folder check reads a real ACL: the entry the agent setup adds, here for "nobody" on a temp folder.
   if (process.platform === "darwin") {
     const dir = path.join(tmp, "home");
     fs.mkdirSync(dir);

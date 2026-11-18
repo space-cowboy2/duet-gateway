@@ -56,6 +56,11 @@ This gateway exposes a home PC to the internet through Tailscale Funnel. The bar
   - `journal.jsonl` holds the tool name, outcome, duration and one short allowlisted target (`TARGETS`). Adding typed
     text, values, messages, results or file contents to it blocks. Text that looks like a password, key or code is
     refused by the notebook, the inbox, the journal, the outbox, `notify` and `agent_send`.
+  - `POST /a2a` (inbound messages from other agents) only puts a labelled item in the inbox and answers that it was
+    delivered. It needs that agent's own `inboundTokenFile` token (compared in constant time), refuses requests that
+    came through Funnel, keeps the secret filter, the length cut and the hourly limit, and exists only when an agent
+    has `inboundTokenFile`. Making it run a tool, start a session, reach Danny's phone, or accept a shared or missing
+    token blocks.
 - **Money tools.** `money_*` stays a read-only allowlist. Adding a tool that moves money or changes accounts blocks.
 - **Secrets.** No secrets, tokens, passphrase hashes or machine paths committed. `config.json`, `state.json`,
   `sessions.json`, `gateway.log`, `duet.OFF`, `desktop.OFF`, `web.OFF`, `watch.OFF`, the assistant state files

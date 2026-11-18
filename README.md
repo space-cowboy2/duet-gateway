@@ -255,6 +255,17 @@ Duet's own VM can remember things and check your accounts on a schedule, but the
 ```
 `agent_send` posts `SendMessage` (and falls back to `message/send` for an agent on the earlier wording), with the bearer token from the token file. Every message starts with a fixed line saying that Duet wrote it, that you did not type it, and that it carries no approval to send, pay for, delete or change anything. The reply comes back marked as content from another agent. If it is not back within `wait_seconds` (90 by default), the call returns and the reply goes to the inbox. 30 messages an hour per agent. The address comes from `config.json` only. An agent that listens on `127.0.0.1` of another machine (Hermes on a Mac does by default) is not reachable from this PC until you publish it on the tailnet, or run a gateway on that machine.
 
+**Messages from other agents.** An agent on this machine can also leave Duet a message. Give its entry an `inboundTokenFile` (a token file next to `config.json`, 16 characters or more, different from `tokenFile`), and point the agent at `http://127.0.0.1:<port>/a2a` with that token as its bearer token. For Hermes, in its `config.yaml`:
+
+```yaml
+a2a_agents:
+  duet:
+    url: http://127.0.0.1:8787/a2a
+    auth: { type: bearer, token: "<the inbound token>" }
+```
+
+The gateway takes an A2A `SendMessage` (or `message/send`), puts the text in the inbox as a message from that agent (content, not a request from you, with how to answer it through `agent_send`), and answers that it was delivered. Nothing else runs because of it: Duet reads it at its next conversation or check-in. A request that came in through Funnel is refused, a message that looks like a secret is not kept, text past 1,600 characters is cut, and each agent may send 30 an hour. For the other direction (`agent_send` to a Hermes agent), that agent needs `duet:<token>` in its `A2A_PEER_TOKENS` and `duet` in its `A2A_TRUSTED_PEERS`, with the same token in this gateway's `tokenFile` for it.
+
 **The journal** holds the tool name, the outcome, the time taken and one short named argument that says what the call was aimed at (`app`, `name`, `workspace`, `agent`, `query`, `id`, `session_id`, or the host of `url`). It never holds typed text, values, messages, file contents or results. It is trimmed to the last 5,000 lines once it passes 2 MB.
 
 **Kill switch:** create `watch.OFF` in this folder to stop every watch and refuse new ones. `gateway.log` gets `watch <id> created|fired|deleted`, `notify sent|failed` and `agent <name> late reply|no reply`: ids and outcomes only.

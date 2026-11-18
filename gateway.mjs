@@ -26,7 +26,7 @@ import { isBrowser, profileDir, refusedFlags, webUpstream, webUrlProblem } from 
 import { launchArgs, realLaunchProbe } from "./launch.mjs";
 import { ASSISTANT_LINE, makeAssistant, enableNotify, tell } from "./assistant.mjs";
 
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MAX_READ = 1 << 20, MAX_OUT = 60_000, MAX_LIST = 500;
 const ACCESS_TTL = 3600, REFRESH_TTL = 30 * 86400, CODE_TTL = 300, LOGIN_TTL = 600, MAX_TRIES = 5;
@@ -625,6 +625,11 @@ export function createApp(cfg, ctx) {
     }
   });
   app.all("/mcp", bearer, (_req, res) => res.status(405).set("Allow", "POST").end());
+  // Danny's other agents on this machine leave Duet a message here (assistant.mjs receive), each with its own token.
+  // It is for this machine only: a request that came in through Funnel is refused.
+  const receive = ctx.assistant?.receive;
+  if (receive) app.post("/a2a", rateLimit({ windowMs: 60_000, limit: 30 }), (req, res, next) => (req.get("tailscale-funnel-request") ? res.status(404).end() : next()),
+    express.json({ limit: "64kb" }), (req, res) => { const r = receive(req.get("authorization"), req.body); res.status(r.status).json(r.json); });
   return app;
 }
 

@@ -57,7 +57,7 @@ try {
   // Off Windows the instructions describe the Mac and leave out tools this machine doesn't have.
   if (!WIN) assert.ok(/always-on Mac/.test(ctx.instructions()) && !/Egnyte|money_/.test(ctx.instructions()), ctx.instructions());
   // The assistant tools (assistant.mjs, tested in assistantcheck.mjs) are on unless config.json turns them off.
-  const ASSISTANT = ["forget", "inbox_done", "inbox_post", "inbox_read", "journal_note", "journal_read", "machine_status", "recall", "remember", "watch_create", "watch_delete", "watch_list"];
+  const ASSISTANT = ["forget", "inbox_done", "inbox_post", "inbox_read", "journal_note", "journal_read", "machine_status", "recall", "remember"];
   assert.deepEqual((await ctx.listTools()).map(t => t.name).sort(), [...ASSISTANT, "files_list", "files_read", "files_search", "guide", "health_report", "run_command"].sort());
   assert.deepEqual((await makeContext({ ...cfg, assistant: { enabled: false } }).listTools()).map(t => t.name).sort(), ["files_list", "files_read", "files_search", "guide", "health_report", "run_command"]);
   // health_report is read-only and returns the summary as JSON.

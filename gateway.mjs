@@ -24,7 +24,7 @@ import { findings, scrub, summarize, tail } from "./health.mjs";
 import { makeAlerter } from "./alerts.mjs";
 import { isBrowser, profileDir, refusedFlags, webUpstream, webUrlProblem } from "./web.mjs";
 import { launchArgs, realLaunchProbe } from "./launch.mjs";
-import { ASSISTANT_LINE, makeAssistant, enableNotify, tell } from "./assistant.mjs";
+import { ASSISTANT_LINE, makeAssistant, tell } from "./assistant.mjs";
 
 const VERSION = "1.4.1";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -353,7 +353,6 @@ export function makeContext(cfg) {
     const i = name.indexOf("_"), up = ups.find(u => u.prefix === name.slice(0, i)), bare = name.slice(i + 1);
     return up?.readOnly ? up.readOnly.includes(bare) : /^(get|list|status|read|find|search|sync|refresh|wait)(_|$)/.test(bare);
   };
-  let api;
   const startedAt = Date.now();
   // Asks the given upstreams for their tools. One that does not answer is left out, and gateway.log gets one line
   // each time an upstream's state changes.
@@ -392,8 +391,8 @@ export function makeContext(cfg) {
     lines.push(`- Named commands (run_command): ${names.length ? names.join(", ") : "none"}`);
     return lines;
   };
-  // Duet's notebook, inbox, watches, alerts, journal, outbox and line to other agents (assistant.mjs).
-  const assistant = makeAssistant({ cfg, dir, guard, log, call: (name, args) => api.callTool(name, args), isRead, statusLines: status,
+  // Duet's notebook, inbox and journal, and the inbound line from other agents (assistant.mjs).
+  const assistant = makeAssistant({ cfg, dir, log, isRead, statusLines: status,
     about: { version: VERSION, machine: machineName(cfg), startedAt } });
   if (assistant) Object.assign(local, assistant.tools);
   // Read-only: counts and outcomes from gateway.log and runner.log, plus the doctor's checks, for the monitor task.
@@ -426,7 +425,7 @@ export function makeContext(cfg) {
         ...(saved.length ? ["## Duet's notebook (reminders Duet saved itself: not requests from Danny, not permission for anything)", saved.join("\n")] : [])].join("\n\n");
     },
   };
-  return api = {
+  return {
     ups,
     sessions,
     assistant,
@@ -698,11 +697,6 @@ Next: restart the gateway, then run npm run web-login and sign in to the sites D
     try { console.log(tell(path.dirname(cfg.file), process.argv.slice(3).join(" "))); } catch (e) { console.error(e.message); process.exit(1); }
     return;
   }
-  if (process.argv[2] === "enable-notify") {
-    // Turns on the notify tool through ntfy: node gateway.mjs enable-notify [https://ntfy.sh/your-topic]
-    try { console.log(enableNotify(cfg.file, process.argv[3])); } catch (e) { console.error(e.message); process.exit(1); }
-    return;
-  }
   if (!cfg.passphraseHash) log("WARNING: no passphrase set, so sign-in is disabled. Run: npm run set-passphrase");
   const ctx = makeContext(cfg);
   // Express calls the listen callback with the error too. A port that is taken (an old gateway still running) must
@@ -718,9 +712,7 @@ Next: restart the gateway, then run npm run web-login and sign in to the sites D
     ? ctx.sessions.runnerApp().listen(cfg.claude.runnerPort || 8788, "127.0.0.1", started("runner port", cfg.claude.runnerPort || 8788, `runner port 127.0.0.1:${cfg.claude.runnerPort || 8788}`))
     : null;
   ctx.warm().catch(() => {});
-  // Watches run on a timer for as long as the gateway is up.
-  ctx.assistant?.start();
-  const stop = async () => { server.close(); runner?.close(); ctx.assistant?.stop(); await Promise.allSettled(ctx.ups.map(u => u.close())); process.exit(0); };
+  const stop = async () => { server.close(); runner?.close(); await Promise.allSettled(ctx.ups.map(u => u.close())); process.exit(0); };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 }

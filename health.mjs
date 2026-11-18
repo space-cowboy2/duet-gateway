@@ -8,7 +8,7 @@ import fs from "node:fs";
 const MAX_BYTES = 4 << 20; // the tail of each log that is read
 const MAX_SAMPLES = 5, MAX_LINE = 200, SLOW_MS = 30_000;
 // Tools that wait on purpose (session long-polls up to 45 s, explicit waits), so a long call is not slowness.
-export const WAITS = /^(start_session|send_message|read_messages|start_egnyte_session|send_egnyte_message|pc_desktop_wait|web_browser_wait_for|agent_send)$/;
+export const WAITS = /^(start_session|send_message|read_messages|start_egnyte_session|send_egnyte_message|pc_desktop_wait|web_browser_wait_for)$/;
 
 // Reads the last `bytes` of a file; "" when it is missing or unreadable.
 export function tail(file, bytes = MAX_BYTES) {

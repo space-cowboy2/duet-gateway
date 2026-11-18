@@ -183,6 +183,6 @@
     "maxParallel": 2,
     "turnTimeoutSecs": 3600
   },
-  "assistant": { "enabled": true, "outbox": "", "watch": { "tools": [] }, "agents": {} },
+  "assistant": { "enabled": true, "agents": {} },
   "alerts": { "enabled": false, "repo": "space-cowboy2/duet-gateway", "tokenFile": "github-token", "ignore": ["upstream-down:tv", "tool-upstream-down:tv_*"] }
 }

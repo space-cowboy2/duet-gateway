@@ -163,6 +163,7 @@ try {
     assert.match(logged, new RegExp(`tool pc_desktop_screenshot refused: ${kind} \\d+ms`), kind);
   assert.match(ctx.instructions(), /pc_desktop_\*/);
   assert.match(ctx.instructions(), /STALE_REF or AMBIGUOUS_TARGET[^]*fresh snapshot/);
+  assert.match(ctx.instructions(), /pc_desktop_press\) fails with ACTION_FAILED, focus the window/);
   assert.doesNotMatch(tv.instructions(), /pc_desktop_/);
 
   // ---- upstream health ----

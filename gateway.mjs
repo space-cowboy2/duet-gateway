@@ -61,7 +61,8 @@ const TOOL_LINES = {
   something in Egnyte in this conversation. Danny approves each call.`,
   desktop: p => `- ${p}_desktop_* drive Danny's real desktop as him: apps, windows, settings. Whatever a read returns is sent to
   Anthropic, so read only the app the task needs. A click that fails with STALE_REF or AMBIGUOUS_TARGET is normal when
-  the screen changed or the name matches several things: take a fresh snapshot and click again with the exact ref.`,
+  the screen changed or the name matches several things: take a fresh snapshot and click again with the exact ref.
+  If a key press (${p}_desktop_press) fails with ACTION_FAILED, focus the window, check the screen and press once more; then try a click.`,
   browser: p => `- ${p}_* drive a browser on the ${PC} with its own profile, signed in only where Danny signed it in. Use them for
   online tasks that need a real browser or his accounts. It opens internet pages only.`,
 };

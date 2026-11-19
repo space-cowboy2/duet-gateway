@@ -423,7 +423,7 @@ export function makeContext(cfg) {
         }
         const i = name.indexOf("_");
         const up = i > 0 && ups.find(u => u.prefix === name.slice(0, i));
-        if (!up) throw new Error(`unknown tool: ${name}`);
+        if (!up) throw refused(`unknown tool: ${name}. Only the tools in this server's tool list exist; to talk to a Claude Code session use start_session, send_message and read_messages.`, "unknown tool");
         const res = await up.call(name.slice(i + 1), args || {});
         if (!res.isError) outcome = "ok";
         else { const code = errorCode(res); if (code) outcome = `error ${code}`; }

@@ -94,6 +94,9 @@ try {
   const actCtx = await newCtx({ ...pc, readOnly: ["desktop_list_windows"] });
   assert.deepEqual((await actCtx.listTools()).find(t => t.name === "pc_desktop_screenshot").annotations, { readOnlyHint: false, destructiveHint: true });
   await refusal(ctx.callTool("pc_desktop_clipboard_get", {}), /not allowed/);
+  // a tool name that does not exist (a model guessing, e.g. agent_send) is a refusal in the log, not a tool error
+  await refusal(ctx.callTool("agent_send", {}), /unknown tool: agent_send.*send_message/);
+  assert.match(fs.readFileSync(logFile, "utf8"), /tool agent_send refused: unknown tool \d+ms/);
 
   // a call goes straight through: no window or process check around it
   reset();
